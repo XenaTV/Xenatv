@@ -1,0 +1,944 @@
+name: Xena TV - Minha Lista IPTV APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/xena-tv-minha-lista.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Baixar repositorio
+        uses: actions/checkout@v4
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Preparar Android SDK
+        uses: android-actions/setup-android@v4
+      - name: Instalar API 36
+        run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+      - name: Configurar Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Preparar codigo Xena TV Minha Lista
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f XenaTV_Android_LibVLC_Teste1.zip
+          mkdir -p build-xena
+          unzip -q XenaTV_Android_LibVLC_Teste1.zip -d build-xena
+          test -f build-xena/XenaTV_Android/app/build.gradle
+          mkdir -p build-xena/XenaTV_Android/app/src/main/java/br/com/xenatv/app
+          cat > build-xena/XenaTV_Android/app/src/main/java/br/com/xenatv/app/MainActivity.java <<'XENA_MAINACTIVITY_JAVA'
+          package br.com.xenatv.app;
+          
+          import android.app.Activity;
+          import android.app.AlertDialog;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.content.res.Configuration;
+          import android.graphics.Color;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.text.Editable;
+          import android.text.TextWatcher;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.Button;
+          import android.widget.EditText;
+          import android.widget.FrameLayout;
+          import android.widget.HorizontalScrollView;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import android.widget.Toast;
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+          import org.videolan.libvlc.LibVLC;
+          import org.videolan.libvlc.Media;
+          import org.videolan.libvlc.MediaPlayer;
+          import org.videolan.libvlc.util.VLCVideoLayout;
+          import java.io.IOException;
+          import java.util.ArrayList;
+          import java.util.List;
+          import java.util.Locale;
+          
+          /** Xena TV — apenas fontes próprias: importar, listar, categorizar e reproduzir no LibVLC. */
+          public class MainActivity extends Activity {
+              private static final int BG=0xff0e0a17, PANEL=0xff1d152c, PANEL2=0xff2b2040;
+              private static final int WHITE=0xfff7f4ff, GRAY=0xffb6abc8, PURPLE=0xffb17eff, GREEN=0xff40ffaa;
+              private static final int PAGE=65, SELECT_FILE=441;
+              private ChannelStore store;
+              private SharedPreferences prefs;
+              private LinearLayout categoryList, channelList, base;
+              private TextView totalText, statusText, listTitle;
+              private EditText searchInput;
+              private String selectedGroup="Todos", selectedType="Todos", search="";
+              private int displayed=PAGE, loadVersion=0;
+              private boolean loading=false, playerVisible=false;
+              private LibVLC libVlc;
+              private MediaPlayer player;
+              private ChannelStore.Channel watching;
+          
+              @Override public void onCreate(Bundle saved){
+                  super.onCreate(saved);
+                  getWindow().setStatusBarColor(BG);getWindow().setNavigationBarColor(BG);
+                  store=new ChannelStore(this);
+                  prefs=getSharedPreferences("xena_minha_lista_v1",Context.MODE_PRIVATE);
+                  if(prefs.getString("url","").isEmpty()) migrateOldUrl();
+                  drawHome();
+                  if(store.count()==0&&!prefs.getString("url","").isEmpty())updateList();
+              }
+              private void migrateOldUrl(){
+                  try{
+                      JSONArray saved=new JSONArray(getSharedPreferences("xena_iptv_private_v1",Context.MODE_PRIVATE).getString("sources","[]"));
+                      for(int i=0;i<saved.length();i++){
+                          JSONObject item=saved.optJSONObject(i);if(item==null)continue;
+                          String url=item.optString("url","");
+                          if((url.startsWith("https://")||url.startsWith("http://"))&&!"direto".equals(item.optString("mode","lista"))){
+                              prefs.edit().putString("url",url).putString("name",item.optString("name","Minha IPTV")).apply();break;
+                          }
+                      }
+                  }catch(Exception ignored){}
+              }
+              private int dp(float n){return (int)(n*getResources().getDisplayMetrics().density+0.5f);}
+              private LinearLayout col(){LinearLayout c=new LinearLayout(this);c.setOrientation(LinearLayout.VERTICAL);return c;}
+              private LinearLayout row(){LinearLayout c=new LinearLayout(this);c.setOrientation(LinearLayout.HORIZONTAL);c.setGravity(Gravity.CENTER_VERTICAL);return c;}
+              private LinearLayout.LayoutParams lp(int w,int h){return new LinearLayout.LayoutParams(w<0?w:dp(w),h<0?h:dp(h));}
+              private void gap(LinearLayout l,int h){l.addView(new View(this),lp(1,h));}
+              private GradientDrawable shape(int color,int border,int radius){
+                  GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(dp(radius));
+                  if(border!=0)d.setStroke(dp(1),border);return d;
+              }
+              private TextView text(String str,int size,int color,boolean bold){
+                  TextView v=new TextView(this);v.setText(str);v.setTextSize(size);v.setTextColor(color);
+                  if(bold)v.setTypeface(Typeface.DEFAULT,Typeface.BOLD);return v;
+              }
+              private Button button(String title,boolean primary){
+                  Button b=new Button(this);b.setAllCaps(false);b.setText(title);b.setTextSize(13);
+                  b.setTypeface(Typeface.DEFAULT,Typeface.BOLD);b.setTextColor(primary?BG:WHITE);
+                  b.setPadding(dp(8),0,dp(8),0);b.setBackground(shape(primary?GREEN:PANEL2,primary?0:0xff523577,12));return b;
+              }
+              private boolean landscape(){
+                  int dpWidth=(int)(getResources().getDisplayMetrics().widthPixels/getResources().getDisplayMetrics().density);
+                  return dpWidth>=560; // Telas estreitas usam categorias horizontais; evita esmagar nomes no Fold fechado.
+              }
+              private void drawHome(){
+                  playerVisible=false;
+                  ScrollView page=new ScrollView(this);page.setFillViewport(true);page.setBackgroundColor(BG);
+                  base=col();base.setPadding(dp(12),dp(15),dp(12),dp(16));page.addView(base);
+                  if(android.os.Build.VERSION.SDK_INT>=35){
+                      page.setOnApplyWindowInsetsListener((view,insets)->{
+                          base.setPadding(dp(12),insets.getSystemWindowInsetTop()+dp(15),dp(12),insets.getSystemWindowInsetBottom()+dp(16));
+                          return insets;
+                      });
+                  }
+                  setContentView(page);
+                  LinearLayout header=row();
+                  TextView brand=text("XENA TV",25,WHITE,true);header.addView(brand,new LinearLayout.LayoutParams(0,-2,1));
+                  TextView indicator=text("● MINHA LISTA",11,GREEN,true);header.addView(indicator);base.addView(header);gap(base,6);
+                  listTitle=text(prefs.getString("name","Minha IPTV"),16,PURPLE,true);base.addView(listTitle);gap(base,9);
+                  LinearLayout buttons=row();
+                  Button link=button("✎ Adicionar / editar lista",true),refresh=button("↻ Atualizar",false);
+                  LinearLayout.LayoutParams left=new LinearLayout.LayoutParams(0,dp(49),2);left.rightMargin=dp(7);
+                  buttons.addView(link,left);buttons.addView(refresh,new LinearLayout.LayoutParams(0,dp(49),1));
+                  base.addView(buttons);gap(base,8);
+                  link.setOnClickListener(v->showAddDialog());refresh.setOnClickListener(v->updateList());
+                  statusText=text("",12,GRAY,false);base.addView(statusText);gap(base,8);
+                  totalText=text("",15,GREEN,true);base.addView(totalText);gap(base,10);
+                  searchInput=new EditText(this);searchInput.setSingleLine(true);searchInput.setTextColor(WHITE);
+                  searchInput.setHintTextColor(GRAY);searchInput.setTextSize(15);
+                  searchInput.setHint("⌕  Pesquisar canais pelo nome");searchInput.setPadding(dp(15),dp(8),dp(15),dp(8));
+                  searchInput.setBackground(shape(PANEL,0xff594176,13));searchInput.setText(search);
+                  base.addView(searchInput,lp(-1,49));
+                  searchInput.addTextChangedListener(new TextWatcher(){
+                      public void beforeTextChanged(CharSequence s,int st,int c,int af){}
+                      public void onTextChanged(CharSequence s,int st,int before,int count){search=s.toString();displayed=PAGE;renderChannels();}
+                      public void afterTextChanged(Editable e){}
+                  });
+                  gap(base,9);
+                  HorizontalScrollView kinds=new HorizontalScrollView(this);kinds.setHorizontalScrollBarEnabled(false);
+                  LinearLayout krow=row();
+                  for(String label:new String[]{"Todos","TV","Filmes","Séries"}){
+                      Button b=button(label,label.equals(selectedType));
+                      LinearLayout.LayoutParams p=lp(-2,39);p.rightMargin=dp(7);krow.addView(b,p);
+                      b.setOnClickListener(v->{selectedType=label;selectedGroup="Todos";displayed=PAGE;drawHome();});
+                  }
+                  kinds.addView(krow);base.addView(kinds);gap(base,10);
+                  LinearLayout content=row();content.setGravity(Gravity.TOP);base.addView(content,lp(-1,-2));
+                  if(landscape()){
+                      categoryList=col();categoryList.setPadding(dp(2),dp(3),dp(7),dp(10));
+                      content.addView(categoryList,lp(205,-2));
+                      View divider=new View(this);divider.setBackgroundColor(0xff3b2a54);content.addView(divider,lp(1,-1));
+                      channelList=col();channelList.setPadding(dp(9),dp(1),dp(3),dp(10));
+                      content.addView(channelList,new LinearLayout.LayoutParams(0,-2,1));
+                  }else{
+                      LinearLayout stack=col();content.addView(stack,lp(-1,-2));
+                      HorizontalScrollView categoryScroll=new HorizontalScrollView(this);categoryScroll.setHorizontalScrollBarEnabled(false);
+                      categoryList=row();categoryScroll.addView(categoryList);stack.addView(categoryScroll,lp(-1,52));gap(stack,7);
+                      channelList=col();stack.addView(channelList);
+                  }
+                  TextView safety=text("Suas listas ficam somente neste aparelho. A Xena TV não fornece canais; a reprodução depende do servidor e dos direitos de acesso.",11,GRAY,false);
+                  gap(base,18);base.addView(safety);
+                  renderAll();
+              }
+              private void renderAll(){
+                  if(channelList==null||categoryList==null)return;
+                  int count=store.count();
+                  totalText.setText(count+" itens na sua lista");
+                  String status=prefs.getString("status","");
+                  statusText.setText(loading?"Lendo sua lista IPTV...":status.isEmpty()?(count==0?"Adicione seu link M3U ou Xtream para começar.":"Pronto para assistir."):status);
+                  renderCategories();renderChannels();
+              }
+              private void addCategoryButton(String name,int count){
+                  boolean selected=name.equals(selectedGroup);
+                  Button b=button(name+(count>=0?"  "+count:""),selected);
+                  if(landscape()){
+                      LinearLayout.LayoutParams p=lp(-1,48);p.bottomMargin=dp(4);categoryList.addView(b,p);
+                  }else{
+                      LinearLayout.LayoutParams p=lp(-2,42);p.rightMargin=dp(6);categoryList.addView(b,p);
+                  }
+                  b.setOnClickListener(v->{selectedGroup=name;displayed=PAGE;renderCategories();renderChannels();});
+              }
+              private void renderCategories(){
+                  if(categoryList==null)return;
+                  categoryList.removeAllViews();
+                  addCategoryButton("Todos",store.typeCount(selectedType));
+                  addCategoryButton("Recentes",-1);addCategoryButton("Favoritos",-1);
+                  for(ChannelStore.Group group:store.categories(selectedType))addCategoryButton(group.title,group.count);
+              }
+              private void renderChannels(){
+                  if(channelList==null)return;
+                  channelList.removeAllViews();
+                  List<ChannelStore.Channel> rows=store.query(selectedGroup,selectedType,search,displayed+1,0);
+                  int shown=Math.min(displayed,rows.size());
+                  for(int i=0;i<shown;i++){
+                      ChannelStore.Channel ch=rows.get(i);
+                      LinearLayout item=row();item.setPadding(dp(11),dp(9),dp(7),dp(9));
+                      item.setBackground(shape(PANEL,0xff342549,12));
+                      TextView icon=text(ch.type.equals("TV")?"▣":ch.type.equals("Filmes")?"▶":"▤",20,GREEN,true);
+                      icon.setGravity(Gravity.CENTER);icon.setBackground(shape(PANEL2,0,10));item.addView(icon,lp(42,46));
+                      LinearLayout desc=col();desc.setPadding(dp(10),0,0,0);
+                      TextView title=text(ch.name,15,WHITE,true);title.setMaxLines(2);desc.addView(title);
+                      TextView label=text(ch.category,11,GRAY,false);label.setMaxLines(1);desc.addView(label);
+                      item.addView(desc,new LinearLayout.LayoutParams(0,-2,1));
+                      Button favorite=button(ch.favorite?"★":"☆",false);item.addView(favorite,lp(43,44));
+                      favorite.setOnClickListener(v->{store.favorite(ch.url,!ch.favorite);renderChannels();});
+                      item.setOnClickListener(v->play(ch));
+                      LinearLayout.LayoutParams p=lp(-1,-2);p.bottomMargin=dp(7);channelList.addView(item,p);
+                  }
+                  if(rows.size()>shown){
+                      Button more=button("Mostrar mais canais",true);
+                      more.setOnClickListener(v->{displayed+=PAGE;renderChannels();});
+                      channelList.addView(more,lp(-1,48));
+                  }
+                  if(shown==0){
+                      TextView empty=text(loading?"Carregando canais...":store.count()==0?"Nenhuma lista importada ainda.":"Nenhum canal encontrado nesta categoria.",14,GRAY,false);
+                      empty.setPadding(dp(10),dp(19),dp(10),dp(19));channelList.addView(empty);
+                  }
+              }
+              private void showAddDialog(){
+                  LinearLayout form=col();form.setPadding(dp(20),dp(2),dp(20),0);
+                  TextView instructions=text("Cole o endereço completo da sua lista M3U. Se for get.php, também tentaremos a API IPTV automaticamente.",13,GRAY,false);
+                  form.addView(instructions);gap(form,9);
+                  EditText name=new EditText(this);name.setSingleLine(true);name.setHint("Nome: Minha IPTV");
+                  name.setText(prefs.getString("name","Minha IPTV"));form.addView(name);
+                  EditText url=new EditText(this);url.setSingleLine(false);url.setMinLines(2);url.setMaxLines(4);
+                  url.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_URI|android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+                  url.setHint("Cole seu link https://.../get.php?...");
+                  url.setText(prefs.getString("url",""));form.addView(url);
+                  AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Minha lista IPTV")
+                      .setView(form).setNegativeButton("Cancelar",null)
+                      .setNeutralButton("Abrir arquivo M3U",(d,w)->pickFile())
+                      .setPositiveButton("Salvar e carregar",null).create();
+                  dialog.setOnShowListener(d->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{
+                      String link=url.getText().toString().trim(),title=name.getText().toString().trim();
+                      if(!link.startsWith("https://")&&!link.startsWith("http://")){
+                          Toast.makeText(this,"Insira um link HTTP ou HTTPS válido.",Toast.LENGTH_LONG).show();return;
+                      }
+                      prefs.edit().putString("url",link).putString("name",title.isEmpty()?"Minha IPTV":title).apply();
+                      dialog.dismiss();listTitle.setText(prefs.getString("name","Minha IPTV"));updateList();
+                  }));
+                  dialog.show();
+              }
+              private void pickFile(){
+                  Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);intent.addCategory(Intent.CATEGORY_OPENABLE);
+                  intent.setType("*/*");intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                  startActivityForResult(intent,SELECT_FILE);
+              }
+              @Override protected void onActivityResult(int request,int result,Intent intent){
+                  super.onActivityResult(request,result,intent);
+                  if(request!=SELECT_FILE||result!=RESULT_OK||intent==null||intent.getData()==null)return;
+                  Uri selected=intent.getData();
+                  try{getContentResolver().takePersistableUriPermission(selected,Intent.FLAG_GRANT_READ_URI_PERMISSION);}catch(Exception ignored){}
+                  prefs.edit().putString("url",selected.toString()).putString("name","Arquivo M3U local").apply();
+                  listTitle.setText("Arquivo M3U local");updateList();
+              }
+              private void updateList(){
+                  final String source=prefs.getString("url","");
+                  if(source.isEmpty()){showAddDialog();return;}
+                  if(loading){Toast.makeText(this,"Aguarde esta importação terminar.",Toast.LENGTH_SHORT).show();return;}
+                  final int request=++loadVersion;
+                  loading=true;renderAll();
+                  new Thread(()->{
+                      ArrayList<M3UStreamParser.Channel> channels=null;
+                      String method="",error="";
+                      try {
+                          if(source.startsWith("content://")){
+                              try(java.io.InputStream input=getContentResolver().openInputStream(Uri.parse(source))){
+                                  if(input==null)throw new IOException("Arquivo local indisponível.");
+                                  M3UStreamParser.Result parsed=M3UStreamParser.importStream("Minha IPTV",source,input);
+                                  if(parsed.direct)throw new IOException("O arquivo é um stream HLS, não uma lista de canais.");
+                                  channels=parsed.channels;method="arquivo M3U";
+                              }
+                          }else{
+                              try {
+                                  M3UStreamParser.Result parsed=M3UStreamParser.importUrl("Minha IPTV",source,true);
+                                  if(!parsed.direct&&parsed.channels.size()>0){channels=parsed.channels;method="lista M3U";}
+                                  else error="O endereço devolveu um único stream HLS, não um catálogo.";
+                              }catch(Exception e){error=safeError(e);}
+                              if((channels==null||channels.isEmpty())&&XtreamCatalog.supports(source)){
+                                  try {
+                                      XtreamCatalog.Result result=XtreamCatalog.load(source);
+                                      channels=result.entries;method="API Xtream ("+result.liveCount+" TV / "+result.moviesCount+" filmes)";
+                                  } catch(Exception e){error="M3U: "+error+" | API Xtream: "+safeError(e);}
+                              }
+                          }
+                          if(channels==null||channels.isEmpty())throw new IOException("Não foi possível obter os canais. "+error);
+                          // Substituição transacional: se a nova importação falhar, o catálogo anterior é preservado.
+                          store.replace(channels);
+                          String finalStatus="Importados "+store.count()+" itens usando "+method+".";
+                          prefs.edit().putString("status",finalStatus).apply();
+                          runOnUiThread(()->{
+                              if(request!=loadVersion||isFinishing()||isDestroyed())return;
+                              loading=false;selectedGroup="Todos";displayed=PAGE;renderAll();
+                          });
+                      } catch(Exception ex){
+                          final String finalStatus="Importação não concluída: "+safeError(ex)+". Os canais anteriores foram preservados.";
+                          prefs.edit().putString("status",finalStatus).apply();
+                          runOnUiThread(()->{
+                              if(request!=loadVersion||isFinishing()||isDestroyed())return;
+                              loading=false;renderAll();
+                              new AlertDialog.Builder(this).setTitle("Não foi possível carregar sua lista")
+                                  .setMessage(finalStatus).setPositiveButton("OK",null).show();
+                          });
+                      }
+                  },"XenaTV-Importador").start();
+              }
+              private static String safeError(Exception e){
+                  String s=e.getMessage()==null?e.getClass().getSimpleName():e.getMessage();
+                  // Nunca mostrar credenciais ou URLs completas em alertas/diagnósticos.
+                  if(s.contains("http://")||s.contains("https://")||s.contains("password="))return "servidor rejeitou ou não retornou o catálogo esperado";
+                  return s.length()>300?s.substring(0,300):s;
+              }
+              private void play(ChannelStore.Channel item){
+                  watching=item;playerVisible=true;store.seen(item.url);
+                  LinearLayout page=col();page.setBackgroundColor(Color.BLACK);setContentView(page);
+                  LinearLayout heading=row();heading.setPadding(dp(8),dp(9),dp(8),dp(9));
+                  Button back=button("‹ Canais",false);heading.addView(back,lp(105,45));back.setOnClickListener(v->closePlayer());
+                  TextView title=text(item.name,16,WHITE,true);title.setPadding(dp(10),0,0,0);heading.addView(title,new LinearLayout.LayoutParams(0,-2,1));
+                  page.addView(heading);
+                  if(android.os.Build.VERSION.SDK_INT>=35){
+                      page.setOnApplyWindowInsetsListener((view,insets)->{
+                          heading.setPadding(dp(8),insets.getSystemWindowInsetTop()+dp(9),dp(8),dp(9));
+                          return insets;
+                      });
+                  }
+                  FrameLayout video=new FrameLayout(this);video.setBackgroundColor(Color.BLACK);
+                  page.addView(video,new LinearLayout.LayoutParams(-1,0,1));
+                  VLCVideoLayout videoSurface=new VLCVideoLayout(this);
+                  video.addView(videoSurface,new FrameLayout.LayoutParams(-1,-1));
+                  TextView state=text("Conectando à transmissão...",13,GREEN,false);
+                  state.setGravity(Gravity.CENTER);page.addView(state,lp(-1,45));
+                  LinearLayout actions=row();actions.setPadding(dp(8),0,dp(8),dp(10));
+                  Button retry=button("↻ Reconectar",true),external=button("Abrir no VLC",false);
+                  LinearLayout.LayoutParams w1=new LinearLayout.LayoutParams(0,dp(48),1);w1.rightMargin=dp(6);
+                  actions.addView(retry,w1);actions.addView(external,new LinearLayout.LayoutParams(0,dp(48),1));page.addView(actions);
+                  retry.setOnClickListener(v->play(item));external.setOnClickListener(v->openExternalVlc(item.url));
+                  try {
+                      stopVideo();
+                      if(libVlc==null){
+                          ArrayList<String> config=new ArrayList<>();config.add("--network-caching=2000");
+                          config.add("--http-reconnect");libVlc=new LibVLC(this,config);
+                      }
+                      player=new MediaPlayer(libVlc);player.attachViews(videoSurface,null,false,false);
+                      final MediaPlayer active=player;
+                      active.setEventListener(e->runOnUiThread(()->{
+                          if(player!=active||!playerVisible)return;
+                          if(e.type==MediaPlayer.Event.Opening)state.setText("Abrindo sinal...");
+                          else if(e.type==MediaPlayer.Event.Playing)state.setText("● Reproduzindo");
+                          else if(e.type==MediaPlayer.Event.Buffering)state.setText("Aguardando dados do servidor...");
+                          else if(e.type==MediaPlayer.Event.EncounteredError)state.setText("Falha no sinal. Toque em Reconectar ou teste no VLC.");
+                          else if(e.type==MediaPlayer.Event.EndReached)state.setText("Transmissão encerrada.");
+                      }));
+                      Media media=new Media(libVlc,Uri.parse(item.url));
+                      media.addOption(":network-caching=2000");media.addOption(":http-reconnect=true");
+                      media.addOption(":http-user-agent=VLC/3.0.21 LibVLC/3.0.21");
+                      if(item.url.startsWith("rtsp://"))media.addOption(":rtsp-tcp");
+                      player.setMedia(media);media.release();player.play();
+                  }catch(Exception ex){state.setText("Não foi possível iniciar o player.");}
+              }
+              private void openExternalVlc(String url){
+                  try {
+                      Intent open=new Intent(Intent.ACTION_VIEW);
+                      open.setDataAndType(Uri.parse(url),"video/*");open.setPackage("org.videolan.vlc");
+                      startActivity(open);
+                  }catch(Exception ex){
+                      Toast.makeText(this,"Instale o VLC ou teste o canal pelo player interno.",Toast.LENGTH_LONG).show();
+                  }
+              }
+              private void stopVideo(){
+                  if(player!=null){
+                      try{player.stop();if(player.getVLCVout().areViewsAttached())player.detachViews();}catch(Exception ignored){}
+                      player.release();player=null;
+                  }
+              }
+              private void closePlayer(){
+                  stopVideo();if(playerVisible){playerVisible=false;watching=null;drawHome();}
+              }
+              @Override public void onBackPressed(){
+                  if(playerVisible){closePlayer();return;}super.onBackPressed();
+              }
+              @Override protected void onDestroy(){
+                  loadVersion++;stopVideo();if(libVlc!=null){libVlc.release();libVlc=null;}
+                  if(store!=null)store.close();super.onDestroy();
+              }
+          }
+          XENA_MAINACTIVITY_JAVA
+          cat > build-xena/XenaTV_Android/app/src/main/java/br/com/xenatv/app/ChannelStore.java <<'XENA_CHANNELSTORE_JAVA'
+          package br.com.xenatv.app;
+          
+          import android.content.Context;
+          import android.database.Cursor;
+          import android.database.sqlite.SQLiteDatabase;
+          import android.database.sqlite.SQLiteOpenHelper;
+          import android.database.sqlite.SQLiteStatement;
+          import java.util.ArrayList;
+          import java.util.List;
+          import java.util.Locale;
+          
+          /** Catálogo privado do aparelho. A lista continua visível mesmo se o servidor ficar temporariamente fora. */
+          public final class ChannelStore extends SQLiteOpenHelper {
+              public static final class Channel {
+                  public final long id;
+                  public final String name,url,category,logo,type;
+                  public final boolean favorite;
+                  Channel(long i,String n,String u,String c,String l,String t,boolean f){
+                      id=i;name=n;url=u;category=c;logo=l;type=t;favorite=f;
+                  }
+              }
+              public static final class Group {
+                  public final String title;
+                  public final int count;
+                  Group(String name,int n){title=name;count=n;}
+              }
+              public ChannelStore(Context context){super(context,"xena_my_catalog_v1.db",null,1);}
+              @Override public void onCreate(SQLiteDatabase db){
+                  db.execSQL("CREATE TABLE channels (_id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, address TEXT NOT NULL, category TEXT NOT NULL, logo TEXT NOT NULL, kind TEXT NOT NULL)");
+                  db.execSQL("CREATE INDEX idx_category ON channels(category)");
+                  db.execSQL("CREATE INDEX idx_kind ON channels(kind)");
+                  db.execSQL("CREATE TABLE favorites (address TEXT PRIMARY KEY)");
+                  db.execSQL("CREATE TABLE recents (address TEXT PRIMARY KEY, seen INTEGER NOT NULL)");
+              }
+              @Override public void onUpgrade(SQLiteDatabase db,int oldVersion,int newVersion){}
+              public void replace(ArrayList<M3UStreamParser.Channel> items){
+                  SQLiteDatabase db=getWritableDatabase();
+                  db.beginTransaction();
+                  try {
+                      db.delete("channels",null,null);
+                      SQLiteStatement st=db.compileStatement("INSERT INTO channels(title,address,category,logo,kind) VALUES(?,?,?,?,?)");
+                      for(M3UStreamParser.Channel c:items){
+                          if(c.url==null||c.url.isEmpty())continue;
+                          st.clearBindings();
+                          String cat=c.category==null||c.category.trim().isEmpty()?"Sem categoria":c.category.trim();
+                          String kind=(cat.toLowerCase(Locale.ROOT).contains("filme")||cat.toLowerCase(Locale.ROOT).contains("movie")||c.url.contains("/movie/"))?"Filmes":
+                              (cat.toLowerCase(Locale.ROOT).contains("série")||cat.toLowerCase(Locale.ROOT).contains("serie")||c.url.contains("/series/"))?"Séries":"TV";
+                          st.bindString(1,c.name==null||c.name.isEmpty()?"Canal sem nome":c.name);
+                          st.bindString(2,c.url);st.bindString(3,cat);
+                          st.bindString(4,c.logo==null?"":c.logo);st.bindString(5,kind);
+                          st.executeInsert();
+                      }
+                      st.close();db.setTransactionSuccessful();
+                  } finally {db.endTransaction();}
+              }
+              public int count(){try(Cursor c=getReadableDatabase().rawQuery("SELECT count(*) FROM channels",null)){return c.moveToFirst()?c.getInt(0):0;}}
+              public int typeCount(String type){
+                  if(type.equals("Todos"))return count();
+                  try(Cursor c=getReadableDatabase().rawQuery("SELECT count(*) FROM channels WHERE kind=?",new String[]{type})){
+                      return c.moveToFirst()?c.getInt(0):0;
+                  }
+              }
+              public List<Group> categories(String type){
+                  ArrayList<Group> result=new ArrayList<>();
+                  String sql="SELECT category,count(*) FROM channels"+(type.equals("Todos")?"":" WHERE kind=?")+" GROUP BY category ORDER BY count(*) DESC, category LIMIT 250";
+                  try(Cursor c=getReadableDatabase().rawQuery(sql,type.equals("Todos")?null:new String[]{type})){
+                      while(c.moveToNext())result.add(new Group(c.getString(0),c.getInt(1)));
+                  }
+                  return result;
+              }
+              public List<Channel> query(String group,String kind,String search,int limit,int offset){
+                  ArrayList<String> values=new ArrayList<>();
+                  StringBuilder where=new StringBuilder(" WHERE 1=1");
+                  if(kind!=null&&!kind.equals("Todos")){where.append(" AND kind=?");values.add(kind);}
+                  if(group!=null&&group.equals("Favoritos"))where.append(" AND EXISTS (SELECT 1 FROM favorites f WHERE f.address=c.address)");
+                  else if(group!=null&&group.equals("Recentes"))where.append(" AND EXISTS (SELECT 1 FROM recents r WHERE r.address=c.address)");
+                  else if(group!=null&&!group.equals("Todos")){where.append(" AND category=?");values.add(group);}
+                  if(search!=null&&!search.trim().isEmpty()){
+                      where.append(" AND (title LIKE ? ESCAPE '!' OR category LIKE ? ESCAPE '!')");
+                      String term="%"+search.trim().replace("!","!!").replace("%","!%").replace("_","!_")+"%";
+                      values.add(term);values.add(term);
+                  }
+                  values.add(String.valueOf(limit));values.add(String.valueOf(offset));
+                  String sort=group!=null&&group.equals("Recentes")?" ORDER BY (SELECT seen FROM recents WHERE address=c.address) DESC, c._id":" ORDER BY c._id";
+                  String sql="SELECT c._id,c.title,c.address,c.category,c.logo,c.kind,"+
+                      "EXISTS(SELECT 1 FROM favorites f WHERE f.address=c.address) FROM channels c"+
+                      where+sort+" LIMIT ? OFFSET ?";
+                  ArrayList<Channel> items=new ArrayList<>();
+                  try(Cursor c=getReadableDatabase().rawQuery(sql,values.toArray(new String[0]))){
+                      while(c.moveToNext())items.add(new Channel(c.getLong(0),c.getString(1),c.getString(2),c.getString(3),c.getString(4),c.getString(5),c.getInt(6)!=0));
+                  }
+                  return items;
+              }
+              public void favorite(String address,boolean enabled){
+                  SQLiteDatabase db=getWritableDatabase();
+                  if(enabled){SQLiteStatement st=db.compileStatement("INSERT OR IGNORE INTO favorites(address) VALUES(?)");st.bindString(1,address);st.executeInsert();st.close();}
+                  else db.delete("favorites","address=?",new String[]{address});
+              }
+              public void seen(String address){
+                  SQLiteStatement st=getWritableDatabase().compileStatement("INSERT OR REPLACE INTO recents(address,seen) VALUES(?,?)");
+                  st.bindString(1,address);st.bindLong(2,System.currentTimeMillis());st.executeInsert();st.close();
+              }
+          }
+          XENA_CHANNELSTORE_JAVA
+          cat > build-xena/XenaTV_Android/app/src/main/java/br/com/xenatv/app/M3UStreamParser.java <<'XENA_M3USTREAMPARSER_JAVA'
+          package br.com.xenatv.app;
+          
+          import java.io.BufferedInputStream;
+          import java.io.BufferedReader;
+          import java.io.ByteArrayOutputStream;
+          import java.io.FilterInputStream;
+          import java.io.IOException;
+          import java.io.InputStream;
+          import java.io.InputStreamReader;
+          import java.net.HttpURLConnection;
+          import java.net.URI;
+          import java.net.URL;
+          import java.nio.charset.Charset;
+          import java.nio.charset.StandardCharsets;
+          import java.util.ArrayList;
+          import java.util.Locale;
+          import java.util.regex.Matcher;
+          import java.util.regex.Pattern;
+          import java.util.zip.GZIPInputStream;
+          
+          /** Lê catálogos M3U canal por canal. Nunca confia apenas no Content-Type do provedor. */
+          public final class M3UStreamParser {
+              private M3UStreamParser() {}
+              public static final int MAX_CHANNELS = 100000;
+              private static final long MAX_BYTES = 256L * 1024L * 1024L;
+              private static final int SNIFF_BYTES = 16384;
+              private static final Pattern ACCEPTED = Pattern.compile("^(https?|rtsp|rtmp|rtp|udp)://", Pattern.CASE_INSENSITIVE);
+              private static final Pattern HTTP = Pattern.compile("^https?://", Pattern.CASE_INSENSITIVE);
+          
+              public static final class Channel {
+                  public final String name, url, category, logo;
+                  Channel(String name, String url, String category, String logo) {
+                      this.name=name;this.url=url;this.category=category;this.logo=logo;
+                  }
+              }
+              public static final class Result {
+                  public final ArrayList<Channel> channels;
+                  public final boolean limited, direct;
+                  Result(ArrayList<Channel> channels, boolean limited, boolean direct) {
+                      this.channels=channels;this.limited=limited;this.direct=direct;
+                  }
+              }
+              private static Result single(String name, String url) {
+                  ArrayList<Channel> channels=new ArrayList<>();
+                  channels.add(new Channel(name,url,"Transmissão direta",""));
+                  return new Result(channels,false,true);
+              }
+              public static Result direct(String name,String url) throws IOException {
+                  if(!ACCEPTED.matcher(url).find())throw new IOException("O endereço não é um link de transmissão compatível.");
+                  return single(name,url);
+              }
+              /** Importação automática para compatibilidade com versões antigas. */
+              public static Result importUrl(String name,String url) throws IOException {
+                  return importUrl(name,url,true);
+              }
+              /** forceList=true: uma lista inválida dá erro, jamais vira silenciosamente um falso canal. */
+              public static Result importUrl(String name,String url,boolean forceList) throws IOException {
+                  if(!HTTP.matcher(url).find()) {
+                      if(forceList)throw new IOException("Para RTSP/RTMP/RTP/UDP escolha 'Canal direto'.");
+                      return direct(name,url);
+                  }
+                  HttpURLConnection conn=null;
+                  try {
+                      conn=(HttpURLConnection)new URL(url).openConnection();
+                      conn.setInstanceFollowRedirects(true);
+                      conn.setConnectTimeout(15000);
+                      conn.setReadTimeout(25000);
+                      conn.setRequestProperty("User-Agent","VLC/3.0.21 LibVLC/3.0.21");
+                      conn.setRequestProperty("Accept","*/*");
+                      conn.setRequestProperty("Accept-Encoding","gzip");
+                      int code=conn.getResponseCode();
+                      if(code<200||code>=300)throw new IOException("Servidor HTTP "+code+". Confira se sua lista ainda está autorizada.");
+                      String ct=conn.getContentType();
+                      String encoding=conn.getContentEncoding();
+                      try(InputStream response=conn.getInputStream()) {
+                          InputStream stream=response;
+                          if(encoding!=null&&encoding.toLowerCase(Locale.ROOT).contains("gzip"))stream=new GZIPInputStream(stream);
+                          return parseInput(name,url,stream,forceList,ct);
+                      }
+                  }finally {if(conn!=null)conn.disconnect();}
+              }
+              /** Permite importar um arquivo M3U selecionado do celular (ACTION_OPEN_DOCUMENT). */
+              public static Result importStream(String name,String base,InputStream stream) throws IOException {
+                  return parseInput(name,base,stream,true,"");
+              }
+              private static Result parseInput(String name,String base,InputStream decoded,boolean forceList,String mime) throws IOException {
+                  BufferedInputStream input=new BufferedInputStream(new LimitedInputStream(decoded,MAX_BYTES),32768);
+                  input.mark(SNIFF_BYTES+16);
+                  byte[] peek=new byte[SNIFF_BYTES];
+                  int count=input.read(peek);
+                  input.reset();
+                  if(count<1)throw new IOException("Lista vazia: o servidor não enviou dados.");
+                  if(count>=2&&(peek[0]&255)==31&&(peek[1]&255)==139) {
+                      // Alguns servidores enviam .m3u.gz sem Content-Encoding.
+                      return parseInput(name,base,new GZIPInputStream(input),forceList,mime);
+                  }
+                  Charset charset=detectEncoding(peek,count,mime);
+                  String preview=new String(peek,0,count,charset).replace("\uFEFF","").trim();
+                  String lowered=preview.toLowerCase(Locale.ROOT);
+                  if(lowered.startsWith("<!doctype")||lowered.startsWith("<html")||lowered.startsWith("<?xml")
+                      ||lowered.startsWith("{\"error\"")||lowered.startsWith("{\"user_info\"")){
+                      throw new IOException("O endereço devolveu HTML/JSON, não uma lista M3U. Confira o link de download.");
+                  }
+                  if(isHls(preview))return single(name,base);
+                  if(looksPlaylist(preview)){
+                      try(BufferedReader reader=new BufferedReader(new InputStreamReader(input,charset),32768)) {
+                          Result result=parse(reader,base);
+                          if(result.direct)return single(name,base);
+                          if(result.channels.isEmpty())throw new IOException("Lista M3U encontrada, mas não há canais com links válidos.");
+                          return result;
+                      }
+                  }
+                  if(forceList){
+                      if(looksBinary(peek,count))throw new IOException("O link enviou vídeo/binário em vez de catálogo M3U. Escolha 'Canal direto' se for um stream.");
+                      throw new IOException("O link não devolveu uma lista M3U (#EXTM3U/#EXTINF). Confirme o endereço da playlist.");
+                  }
+                  if(looksBinary(peek,count)||isMediaMime(mime))return single(name,base);
+                  throw new IOException("O link não devolveu uma lista M3U nem uma mídia reconhecida.");
+              }
+              private static boolean looksPlaylist(String preview){
+                  // Pode haver uma linha de comentário, aviso ou espaços antes de #EXTM3U.
+                  String sample=preview.replace("\r","\n");
+                  return sample.contains("#EXTINF")||sample.contains("#EXTM3U")||sample.contains("#EXTGRP:")
+                      ||(sample.contains("\n")&&ACCEPTED.matcher(sample.trim()).find());
+              }
+              private static boolean isHls(String preview){
+                  // Playlist HLS é um ÚNICO stream (segmentos/variantes), não lista de canais IPTV.
+                  if(!preview.contains("#EXT-X-"))return false;
+                  int x=preview.indexOf("#EXT-X-");
+                  int ext=preview.indexOf("#EXTINF");
+                  return x>=0&&(ext<0||x<ext||preview.contains("#EXT-X-TARGETDURATION")||preview.contains("#EXT-X-STREAM-INF"));
+              }
+              private static boolean isMediaMime(String value){
+                  String mime=value==null?"":value.toLowerCase(Locale.ROOT);
+                  return (mime.startsWith("video/")||mime.startsWith("audio/"))
+                      && !mime.contains("mpegurl")&&!mime.contains("m3u")&&!mime.contains("playlist");
+              }
+              private static Charset detectEncoding(byte[] b,int n,String mime){
+                  if(n>=2&&(b[0]&255)==255&&(b[1]&255)==254)return StandardCharsets.UTF_16LE;
+                  if(n>=2&&(b[0]&255)==254&&(b[1]&255)==255)return StandardCharsets.UTF_16BE;
+                  if(n>=4){
+                      int even=0,odd=0,total=0;
+                      for(int i=0;i<Math.min(n,300);i++){if(b[i]==0){if(i%2==0)even++;else odd++;}total++;}
+                      if(odd>total/5&&odd>even*3)return StandardCharsets.UTF_16LE;
+                      if(even>total/5&&even>odd*3)return StandardCharsets.UTF_16BE;
+                  }
+                  if(mime!=null){
+                      Matcher m=Pattern.compile("charset\\s*=\\s*[\"']?([A-Za-z0-9._-]+)",Pattern.CASE_INSENSITIVE).matcher(mime);
+                      if(m.find())try {return Charset.forName(m.group(1));}catch(Exception ignored){}
+                  }
+                  return StandardCharsets.UTF_8;
+              }
+              private static boolean looksBinary(byte[] data,int n){
+                  int control=0;
+                  for(int i=0;i<n;i++){
+                      int b=data[i]&255;
+                      if(b==0||(b<32&&b!=9&&b!=10&&b!=13))control++;
+                  }
+                  return control>Math.max(1,n/100);
+              }
+              /** Mantém os nomes, categorias, logos e cada URL de canal. */
+              static Result parse(BufferedReader reader,String base) throws IOException {
+                  ArrayList<Channel> channels=new ArrayList<>();
+                  String pendingName="",group="",logo="",line;
+                  boolean sawExtinf=false;
+                  while((line=reader.readLine())!=null){
+                      line=line.trim();
+                      if(line.startsWith("\uFEFF"))line=line.substring(1);
+                      if(line.isEmpty())continue;
+                      if(line.regionMatches(true,0,"#EXT-X-",0,7))return new Result(new ArrayList<>(),false,true);
+                      if(line.regionMatches(true,0,"#EXTINF",0,7)){
+                          sawExtinf=true;
+                          String meta=line.substring(7);
+                          int comma=commaOutsideQuotes(meta);
+                          String attrs=comma<0?meta:meta.substring(0,comma);
+                          pendingName=comma<0?"":meta.substring(comma+1).trim();
+                          if(pendingName.isEmpty())pendingName=attribute(attrs,"tvg-name");
+                          group=attribute(attrs,"group-title");
+                          logo=attribute(attrs,"tvg-logo");
+                      }else if(line.regionMatches(true,0,"#EXTGRP:",0,8)){
+                          group=line.substring(8).trim();
+                      }else if(!line.startsWith("#")){
+                          String url=normalizeLink(line,base);
+                          if(url!=null){
+                              String title=pendingName.isEmpty()?"Canal "+(channels.size()+1):pendingName;
+                              channels.add(new Channel(title,url,group,logo));
+                              if(channels.size()>=MAX_CHANNELS)return new Result(channels,true,false);
+                          }
+                          pendingName="";group="";logo="";
+                      }
+                  }
+                  return new Result(channels,false,false);
+              }
+              private static int commaOutsideQuotes(String s){
+                  char quote=0;
+                  for(int i=0;i<s.length();i++){
+                      char c=s.charAt(i);
+                      if(quote==0&&(c=='\''||c=='"'))quote=c;
+                      else if(quote==c)quote=0;
+                      else if(c==','&&quote==0)return i;
+                  }
+                  return -1;
+              }
+              private static String attribute(String attrs,String key){
+                  Matcher m=Pattern.compile("(?:^|\\s)"+Pattern.quote(key)+"\\s*=\\s*([\"'])(.*?)\\1",Pattern.CASE_INSENSITIVE).matcher(attrs);
+                  if(m.find())return m.group(2).trim();
+                  // Alguns provedores usam atributos sem aspas.
+                  m=Pattern.compile("(?:^|\\s)"+Pattern.quote(key)+"\\s*=\\s*([^\\s,]+)",Pattern.CASE_INSENSITIVE).matcher(attrs);
+                  return m.find()?m.group(1).trim():"";
+              }
+              private static String normalizeLink(String value,String base){
+                  try{
+                      if(value.contains(" "))value=value.replace(" ","%20");
+                      URI uri=new URI(value);
+                      if(!uri.isAbsolute())uri=new URI(base).resolve(uri);
+                      String scheme=uri.getScheme();
+                      if(scheme==null||scheme.isEmpty())return null;
+                      if(!ACCEPTED.matcher(uri.toString()).find())return null;
+                      if((scheme.equalsIgnoreCase("http")||scheme.equalsIgnoreCase("https"))&&uri.getHost()==null)return null;
+                      return uri.toString();
+                  }catch(Exception e){return null;}
+              }
+              private static final class LimitedInputStream extends FilterInputStream {
+                  long consumed=0;final long max;
+                  LimitedInputStream(InputStream stream,long max){super(stream);this.max=max;}
+                  @Override public int read() throws IOException {
+                      int n=in.read();if(n>=0&&++consumed>max)throw new IOException("Lista ultrapassa 256 MB.");return n;
+                  }
+                  @Override public int read(byte[] buf,int off,int len) throws IOException {
+                      int n=in.read(buf,off,len);if(n>0&&(consumed+=n)>max)throw new IOException("Lista ultrapassa 256 MB.");return n;
+                  }
+              }
+          }
+          XENA_M3USTREAMPARSER_JAVA
+          cat > build-xena/XenaTV_Android/app/src/main/java/br/com/xenatv/app/XtreamCatalog.java <<'XENA_XTREAMCATALOG_JAVA'
+          package br.com.xenatv.app;
+          
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+          import java.io.BufferedInputStream;
+          import java.io.ByteArrayOutputStream;
+          import java.io.IOException;
+          import java.io.InputStream;
+          import java.net.HttpURLConnection;
+          import java.net.URI;
+          import java.net.URL;
+          import java.net.URLDecoder;
+          import java.net.URLEncoder;
+          import java.nio.charset.StandardCharsets;
+          import java.util.ArrayList;
+          import java.util.HashMap;
+          import java.util.Locale;
+          import java.util.Map;
+          import java.util.zip.GZIPInputStream;
+          
+          /** Fallback para painéis Xtream autorizados: usa a mesma API que o site Xena TV já usava. */
+          public final class XtreamCatalog {
+              private XtreamCatalog() {}
+              public static final class Result {
+                  public final ArrayList<M3UStreamParser.Channel> entries;
+                  public final int liveCount, moviesCount;
+                  Result(ArrayList<M3UStreamParser.Channel> e, int l, int m) { entries=e;liveCount=l;moviesCount=m; }
+              }
+              private static class Account {
+                  String base, user, password, params;
+              }
+              private static Account account(String source) throws IOException {
+                  try {
+                      URI uri=new URI(source);
+                      if(!"http".equalsIgnoreCase(uri.getScheme())&&!"https".equalsIgnoreCase(uri.getScheme())) throw new IOException("Link HTTP(S) necessário.");
+                      String path=uri.getPath()==null?"":uri.getPath();
+                      // A credencial deve vir do link informado pelo usuário, nunca do código/servidor GitHub.
+                      if(!path.toLowerCase(Locale.ROOT).endsWith("get.php"))throw new IOException("Endereço não é do tipo get.php com usuário e senha.");
+                      Account a=new Account();
+                      String folder=path.substring(0,path.lastIndexOf('/')+1);
+                      a.base=uri.getScheme()+"://"+uri.getRawAuthority()+folder;
+                      Map<String,String> query=new HashMap<>();
+                      if(uri.getRawQuery()!=null)for(String field:uri.getRawQuery().split("&")){
+                          String[] part=field.split("=",2);
+                          if(part.length==2)query.put(URLDecoder.decode(part[0],"UTF-8").toLowerCase(Locale.ROOT),URLDecoder.decode(part[1],"UTF-8"));
+                      }
+                      a.user=query.get("username");a.password=query.get("password");
+                      if(a.user==null||a.password==null||a.user.isEmpty()||a.password.isEmpty())throw new IOException("O link não contém username e password.");
+                      a.params="username="+URLEncoder.encode(a.user,"UTF-8")+"&password="+URLEncoder.encode(a.password,"UTF-8");
+                      return a;
+                  } catch(IOException ex){throw ex;}catch(Exception ex){throw new IOException("O endereço da conta IPTV é inválido.");}
+              }
+              private static String api(Account a,String action){return a.base+"player_api.php?"+a.params+(action.isEmpty()?"":"&action="+action);}
+              private static String request(String target) throws IOException {
+                  HttpURLConnection connection=null;
+                  try {
+                      connection=(HttpURLConnection)new URL(target).openConnection();
+                      connection.setInstanceFollowRedirects(true);
+                      connection.setConnectTimeout(15000);connection.setReadTimeout(35000);
+                      connection.setRequestProperty("User-Agent","VLC/3.0.21 LibVLC/3.0.21");
+                      connection.setRequestProperty("Accept","application/json, */*");
+                      connection.setRequestProperty("Accept-Encoding","gzip");
+                      int code=connection.getResponseCode();
+                      if(code<200||code>=300)throw new IOException("API IPTV: servidor respondeu HTTP "+code);
+                      try(InputStream raw=connection.getInputStream()) {
+                          InputStream in=raw;
+                          String enc=connection.getContentEncoding();
+                          if(enc!=null&&enc.toLowerCase(Locale.ROOT).contains("gzip"))in=new GZIPInputStream(raw);
+                          try(BufferedInputStream input=new BufferedInputStream(in,32768);
+                              ByteArrayOutputStream data=new ByteArrayOutputStream()) {
+                              byte[] chunk=new byte[16384];int n,bytes=0;
+                              while((n=input.read(chunk))!=-1) {
+                                  bytes+=n;if(bytes>50*1024*1024)throw new IOException("Catálogo JSON acima de 50 MB.");
+                                  data.write(chunk,0,n);
+                              }
+                              return new String(data.toByteArray(),StandardCharsets.UTF_8).replace("\uFEFF","");
+                          }
+                      }
+                  } finally { if(connection!=null)connection.disconnect(); }
+              }
+              private static JSONArray array(Account a,String action) throws IOException {
+                  try{return new JSONArray(request(api(a,action)));}
+                  catch(IOException e){throw e;}catch(Exception e){throw new IOException("A API não enviou a lista "+action+" em JSON.");}
+              }
+              private static Map<String,String> categories(Account a,String action){
+                  Map<String,String> lookup=new HashMap<>();
+                  try {
+                      JSONArray arr=array(a,action);
+                      for(int i=0;i<arr.length();i++){
+                          JSONObject o=arr.optJSONObject(i);if(o==null)continue;
+                          lookup.put(o.optString("category_id",""),o.optString("category_name","Sem categoria"));
+                      }
+                  }catch(Exception ignored){}
+                  return lookup;
+              }
+              private static String safeExt(String extension){
+                  if(extension==null||!extension.matches("[A-Za-z0-9]{1,6}"))return "mp4";
+                  return extension;
+              }
+              public static boolean supports(String source){
+                  try {account(source);return true;}catch(Exception e){return false;}
+              }
+              public static Result load(String source) throws IOException {
+                  Account a=account(source);
+                  try {
+                      JSONObject auth=new JSONObject(request(api(a,"")));
+                      JSONObject user=auth.optJSONObject("user_info");
+                      if(user==null||"0".equals(user.optString("auth","1")))
+                          throw new IOException("A conta foi recusada pelo painel IPTV. Confira usuário e senha.");
+                      String status=user.optString("status","");
+                      if(status.equalsIgnoreCase("Expired")||status.equalsIgnoreCase("Disabled")||status.equalsIgnoreCase("Banned"))
+                          throw new IOException("O painel IPTV informou status da conta: "+status+".");
+                  }catch(IOException e){throw e;}
+                  catch(Exception e){throw new IOException("A API IPTV não retornou uma resposta de autenticação válida.");}
+                  Map<String,String> liveCategories=categories(a,"get_live_categories");
+                  JSONArray live=array(a,"get_live_streams");
+                  ArrayList<M3UStreamParser.Channel> entries=new ArrayList<>();
+                  String user=URLEncoder.encode(a.user,"UTF-8"),pass=URLEncoder.encode(a.password,"UTF-8");
+                  int countLive=0,countMovies=0;
+                  for(int i=0;i<live.length()&&entries.size()<M3UStreamParser.MAX_CHANNELS;i++){
+                      JSONObject item=live.optJSONObject(i);if(item==null)continue;
+                      String id=item.optString("stream_id","");if(!id.matches("[0-9]+"))continue;
+                      String title=item.optString("name","Canal "+id);
+                      String group=liveCategories.getOrDefault(item.optString("category_id",""),"TV ao vivo");
+                      String logo=item.optString("stream_icon","");
+                      String url=a.base+"live/"+user+"/"+pass+"/"+id+".ts";
+                      entries.add(new M3UStreamParser.Channel(title,url,group,logo));countLive++;
+                  }
+                  // Algumas contas não oferecem VOD pela API. Isso não deve invalidar os canais ao vivo.
+                  try {
+                      Map<String,String> movieCategories=categories(a,"get_vod_categories");
+                      JSONArray movies=array(a,"get_vod_streams");
+                      for(int i=0;i<movies.length()&&entries.size()<M3UStreamParser.MAX_CHANNELS;i++){
+                          JSONObject item=movies.optJSONObject(i);if(item==null)continue;
+                          String id=item.optString("stream_id","");if(!id.matches("[0-9]+"))continue;
+                          String ext=safeExt(item.optString("container_extension","mp4"));
+                          String title=item.optString("name","Filme "+id);
+                          String group="Filmes • "+movieCategories.getOrDefault(item.optString("category_id",""),"Sem categoria");
+                          String logo=item.optString("stream_icon","");
+                          String url=a.base+"movie/"+user+"/"+pass+"/"+id+"."+ext;
+                          entries.add(new M3UStreamParser.Channel(title,url,group,logo));countMovies++;
+                      }
+                  } catch(Exception ignored){}
+                  if(entries.isEmpty())throw new IOException("A API respondeu, mas não retornou canais disponíveis para esta conta.");
+                  return new Result(entries,countLive,countMovies);
+              }
+          }
+          XENA_XTREAMCATALOG_JAVA
+          python3 - <<'CONFIG_XENA'
+          from pathlib import Path
+          import re
+          base=Path('build-xena/XenaTV_Android')
+          manifest=base/'app/src/main/AndroidManifest.xml'
+          content=manifest.read_text(encoding='utf-8')
+          content=content.replace('android:usesCleartextTraffic="false"','android:usesCleartextTraffic="true"')
+          assert 'android.permission.INTERNET' in content
+          assert 'android:usesCleartextTraffic="true"' in content
+          manifest.write_text(content,encoding='utf-8')
+          app=base/'app/build.gradle'
+          content=app.read_text(encoding='utf-8')
+          content=re.sub(r'compileSdk\s+35', 'compileSdk 36', content)
+          content=re.sub(r'versionCode\s+\d+', 'versionCode 4', content)
+          content=re.sub(r"versionName\s+'[^']+'", "versionName '4.0-minha-lista'", content)
+          assert 'compileSdk 36' in content
+          app.write_text(content,encoding='utf-8')
+          gradle=base/'build.gradle'
+          content=gradle.read_text(encoding='utf-8')
+          content=content.replace("version '8.7.3'", "version '8.10.1'")
+          assert "version '8.10.1'" in content
+          gradle.write_text(content,encoding='utf-8')
+          print('Xena TV Minha Lista: fontes sao inseridas SOMENTE no aparelho.')
+          CONFIG_XENA
+      - name: Compilar APK com LibVLC
+        working-directory: build-xena/XenaTV_Android
+        run: gradle --no-daemon --stacktrace assembleDebug
+      - name: Disponibilizar aplicativo Android
+        uses: actions/upload-artifact@v4
+        with:
+          name: XenaTV-MINHA-LISTA-APK
+          path: build-xena/XenaTV_Android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
