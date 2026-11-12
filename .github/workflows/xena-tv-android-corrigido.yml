@@ -1,0 +1,66 @@
+name: Xena TV Android - APK corrigido
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/xena-tv-android-corrigido.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  compilar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Baixar arquivos do repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Instalar Android API 36
+        run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+
+      - name: Configurar Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Extrair Xena TV e atualizar compatibilidade LibVLC
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f XenaTV_Android_LibVLC_Teste1.zip
+          mkdir -p xena-build
+          unzip -q XenaTV_Android_LibVLC_Teste1.zip -d xena-build
+          cd xena-build/XenaTV_Android
+          test -f app/build.gradle
+          test -f build.gradle
+          # LibVLC 3.7.7 exige compileSdk 36 ou superior.
+          sed -i -E 's/compileSdk[[:space:]]+35/compileSdk 36/' app/build.gradle
+          # Android Gradle Plugin 8.10.1 suporta API 36, com Gradle >= 8.11.1.
+          sed -i "s/version '8.7.3'/version '8.10.1'/" build.gradle
+          grep -Eq 'compileSdk[[:space:]]+36' app/build.gradle
+          grep -Fq "version '8.10.1'" build.gradle
+          echo 'Projeto corrigido para Android API 36 + AGP 8.10.1'
+
+      - name: Compilar Xena TV com LibVLC
+        working-directory: xena-build/XenaTV_Android
+        run: gradle --no-daemon assembleDebug
+
+      - name: Disponibilizar o APK para baixar
+        uses: actions/upload-artifact@v4
+        with:
+          name: XenaTV-Android-APK
+          path: xena-build/XenaTV_Android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
