@@ -1,0 +1,1225 @@
+name: Xena TV ULTRA - TV Filmes Series APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/xena-tv-ultra-completo.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  compilar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Baixar projeto original
+        uses: actions/checkout@v4
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v4
+      - name: Instalar Android API 36
+        run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+      - name: Configurar Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Aplicar interface ULTRA completa e gerenciador de IPTV
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f XenaTV_Android_LibVLC_Teste1.zip
+          mkdir -p xena-build
+          unzip -q XenaTV_Android_LibVLC_Teste1.zip -d xena-build
+          mkdir -p xena-build/XenaTV_Android/app/src/main/java/br/com/xenatv/app
+          cat > xena-build/XenaTV_Android/app/src/main/java/br/com/xenatv/app/MainActivity.java <<'XENA_MAIN_JAVA'
+          package br.com.xenatv.app;
+
+          import android.app.Activity;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.content.res.Configuration;
+          import android.graphics.Bitmap;
+          import android.graphics.BitmapFactory;
+          import android.graphics.Color;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.text.Editable;
+          import android.text.TextWatcher;
+          import android.util.LruCache;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.Button;
+          import android.widget.EditText;
+          import android.widget.FrameLayout;
+          import android.widget.HorizontalScrollView;
+          import android.widget.ImageView;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+          import org.videolan.libvlc.LibVLC;
+          import org.videolan.libvlc.Media;
+          import org.videolan.libvlc.MediaPlayer;
+          import org.videolan.libvlc.util.VLCVideoLayout;
+          import java.io.InputStream;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
+          import java.text.SimpleDateFormat;
+          import java.util.ArrayList;
+          import java.util.Collections;
+          import java.util.Comparator;
+          import java.util.Date;
+          import java.util.LinkedHashMap;
+          import java.util.Locale;
+
+          /** Xena TV: interface nativa para conteúdos importados pelo próprio usuário. */
+          public class MainActivity extends Activity {
+              private static final int BG=0xff0a0910, PANEL=0xff191521, PANEL2=0xff292434,
+                      WHITE=0xfff7f4ff, SUB=0xffb3adbc, GREEN=0xff3aff9d,
+                      PURPLE=0xffa45aff, YELLOW=0xffffdf55;
+              private static final String HOME="Início", TV="TV", MOVIES="Filmes", SERIES="Séries",
+                      FAV="Favoritos", SEARCH="Buscar";
+              private final ArrayList<Entry> all=new ArrayList<>();
+              private final LinkedHashMap<String,String> loadErrors=new LinkedHashMap<>();
+              private final LruCache<String,Bitmap> logoCache=new LruCache<String,Bitmap>(12*1024){
+                  @Override protected int sizeOf(String key,Bitmap value){return Math.max(1,value.getByteCount()/1024);}
+              };
+              private SharedPreferences settings, listsPrefs;
+              private String currentTab=HOME, selectedGroup="Todos", listSignature="", searchText="";
+              private boolean showingFullScreen=false, showingDetails=false, isLandscape=false, refreshWhenBack=false;
+              private int generation=0, shown=80, imported=0, pending=0;
+              private Item selectedItem;
+              private Entry detailsItem;
+              private LinearLayout centerRows, categoriesBox, previewBox;
+              private View highlightedRow;
+              private TextView listingCount;
+              private LibVLC libVlc;
+              private MediaPlayer mediaPlayer;
+
+              static final class Item {
+                  final String name, url, group, image, source, kind;
+                  Item(String n,String u,String g,String img,String from,String type){
+                      name=n;url=u;group=g;image=img;source=from;kind=type;
+                  }
+              }
+              // Keeps a single stable model throughout navigation (no separate fake movie catalog).
+              static final class Entry {
+                  final Item value;
+                  Entry(Item v){value=v;}
+              }
+
+              @Override public void onCreate(Bundle saved){
+                  super.onCreate(saved);
+                  getWindow().setStatusBarColor(BG);getWindow().setNavigationBarColor(BG);
+                  settings=getSharedPreferences("xena_tv_ui_v2",Context.MODE_PRIVATE);
+                  listsPrefs=getSharedPreferences("xena_iptv_private_v1",Context.MODE_PRIVATE);
+                  builtInChannels();render();
+              }
+              @Override protected void onResume(){
+                  super.onResume();String raw=listsPrefs.getString("sources","[]");
+                  if(refreshWhenBack||!raw.equals(listSignature)){refreshWhenBack=false;reloadAll(raw);}
+              }
+              private void builtInChannels(){
+                  all.clear();
+                  add("TV Câmara","https://stream3.camara.gov.br/tv1/manifest.m3u8","Canais públicos","","Xena TV","TV");
+                  add("TV Senado","https://tv.senado.leg.br/hls/tv-senado.m3u8","Canais públicos","","Xena TV","TV");
+                  add("TV Brasil","https://tvbrasil-stream.ebc.com.br/index.m3u8","Canais públicos","","Xena TV","TV");
+                  add("Teste do player • Mux","https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8","Demonstrações","","Xena TV","TV");
+                  add("Teste do player • Apple","https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8","Demonstrações","","Xena TV","TV");
+              }
+              private void add(String name,String url,String group,String logo,String source,String kind){
+                  all.add(new Entry(new Item(name,url,group,logo,source,kind)));
+              }
+              private static String classify(String title,String group,String url){
+                  String g=group.toLowerCase(Locale.ROOT), u=url.toLowerCase(Locale.ROOT), n=title.toLowerCase(Locale.ROOT);
+                  if(g.contains("séries")||g.contains("series")||g.contains("seriados")||g.contains("tv shows")
+                          ||u.contains("/series/")||n.matches(".*s[0-9]{1,2}e[0-9]{1,3}.*"))return SERIES;
+                  if(g.contains("filme")||g.contains("movie")||g.contains("cinema")||g.contains("vod")
+                          ||u.contains("/movie/"))return MOVIES;
+                  return TV;
+              }
+              private void reloadAll(String raw){
+                  listSignature=raw;final int request=++generation;
+                  builtInChannels();loadErrors.clear();imported=0;pending=0;render();
+                  JSONArray sources;
+                  try {sources=new JSONArray(raw);}catch(Exception e){return;}
+                  final ArrayList<String[]> catalogs=new ArrayList<>();
+                  for(int i=0;i<sources.length();i++){
+                      JSONObject o=sources.optJSONObject(i);
+                      if(o==null)continue;
+                      String u=o.optString("url",""), name=o.optString("name","Minha lista");
+                      if(!u.isEmpty())catalogs.add(new String[]{name,u});
+                  }
+                  pending=catalogs.size();render();
+                  // Sequential background fetch keeps bandwidth and memory usage predictable.
+                  new Thread(()->{
+                      for(String[] source:catalogs){
+                          if(request!=generation)return;
+                          try{
+                              M3UStreamParser.Result parsed=M3UStreamParser.importUrl(source[0],source[1]);
+                              ArrayList<Entry> importedEntries=new ArrayList<>();
+                              for(M3UStreamParser.Channel c:parsed.channels){
+                                  importedEntries.add(new Entry(new Item(c.name,c.url,c.category,c.logo,source[0],classify(c.name,c.category,c.url))));
+                              }
+                              runOnUiThread(()->{
+                                  if(request!=generation||isFinishing()||isDestroyed())return;
+                                  all.addAll(importedEntries);imported+=importedEntries.size();pending--;render();
+                              });
+                          }catch(Exception e){
+                              String error=e.getMessage()==null?e.getClass().getSimpleName():e.getMessage();
+                              runOnUiThread(()->{
+                                  if(request!=generation||isFinishing()||isDestroyed())return;
+                                  loadErrors.put(source[0],error);pending--;render();
+                              });
+                          }
+                      }
+                  },"XenaTV-Import").start();
+              }
+              private int dp(float p){return (int)(getResources().getDisplayMetrics().density*p+.5f);}
+              private LinearLayout col(){LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.VERTICAL);return l;}
+              private LinearLayout row(){LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.HORIZONTAL);l.setGravity(Gravity.CENTER_VERTICAL);return l;}
+              private LinearLayout.LayoutParams lp(int w,int h){return new LinearLayout.LayoutParams(w<0?w:dp(w),h<0?h:dp(h));}
+              private void gap(LinearLayout l,int value){View v=new View(this);l.addView(v,lp(1,value));}
+              private TextView text(String s,int size,int color,boolean bold){
+                  TextView t=new TextView(this);t.setText(s);t.setTextSize(size);t.setTextColor(color);
+                  if(bold)t.setTypeface(Typeface.DEFAULT,Typeface.BOLD);return t;
+              }
+              private GradientDrawable surface(int fill,int stroke,int radius){
+                  GradientDrawable d=new GradientDrawable();d.setColor(fill);d.setCornerRadius(dp(radius));
+                  if(stroke!=0)d.setStroke(dp(1),stroke);return d;
+              }
+              private GradientDrawable heroGradient(){
+                  GradientDrawable d=new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                          new int[]{0xff342153,0xff1a2135,0xff10231e});
+                  d.setCornerRadius(dp(20));d.setStroke(dp(1),0xff64478c);return d;
+              }
+              private Button button(String s,boolean accent){
+                  Button b=new Button(this);b.setAllCaps(false);b.setText(s);
+                  b.setTextColor(accent?BG:WHITE);b.setTextSize(13);b.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
+                  b.setBackground(surface(accent?GREEN:0xff382c4c,0,12));return b;
+              }
+              private ScrollView scroller(LinearLayout parent){
+                  ScrollView sc=new ScrollView(this);sc.setFillViewport(true);
+                  parent.addView(sc,new LinearLayout.LayoutParams(-1,0,1));return sc;
+              }
+              private LinearLayout page(ScrollView sc){
+                  LinearLayout content=col();content.setPadding(dp(15),dp(12),dp(15),dp(25));sc.addView(content);return content;
+              }
+              private int count(String kind){int n=0;for(Entry e:all)if(e.value.kind.equals(kind))n++;return n;}
+              private void render(){
+                  if(isFinishing()||showingFullScreen||showingDetails)return;
+                  stopPlayer();isLandscape=getResources().getConfiguration().orientation==Configuration.ORIENTATION_LANDSCAPE;
+                  LinearLayout root=col();root.setBackgroundColor(BG);setContentView(root);
+                  LinearLayout header=row();header.setPadding(dp(16),dp(8),dp(14),dp(6));
+                  TextView brand=text("XENA TV",23,WHITE,true);header.addView(brand);
+                  TextView dot=text("  ●",12,GREEN,true);header.addView(dot);
+                  TextView clock=text(new SimpleDateFormat("EEE, dd MMM  HH:mm",new Locale("pt","BR")).format(new Date()),
+                          isLandscape?14:10,SUB,false);clock.setGravity(Gravity.END);
+                  header.addView(clock,new LinearLayout.LayoutParams(0,-2,1));
+                  root.addView(header);View divider=new View(this);divider.setBackgroundColor(0xff35283f);root.addView(divider,lp(-1,1));
+                  if(currentTab.equals(TV))renderTelevision(root);
+                  else if(currentTab.equals(MOVIES)||currentTab.equals(SERIES))renderCatalog(root,currentTab);
+                  else if(currentTab.equals(FAV))renderFavorites(root);
+                  else if(currentTab.equals(SEARCH))renderSearch(root);
+                  else renderHome(root);
+                  renderNav(root);
+              }
+              private void renderNav(LinearLayout root){
+                  HorizontalScrollView slider=new HorizontalScrollView(this);slider.setHorizontalScrollBarEnabled(false);
+                  slider.setBackgroundColor(0xff15101c);LinearLayout nav=row();nav.setPadding(dp(7),dp(4),dp(7),dp(4));
+                  String[][] options={{"⌂","Início",HOME},{"▣","TV",TV},{"▤","Filmes",MOVIES},
+                          {"▥","Séries",SERIES},{"★","Favoritos",FAV},{"⌕","Buscar",SEARCH},{"⚙","Listas","Listas"}};
+                  for(String[] option:options){
+                      TextView tab=text(option[0]+"  "+option[1],12,currentTab.equals(option[2])?GREEN:SUB,true);
+                      tab.setGravity(Gravity.CENTER);tab.setPadding(dp(12),dp(12),dp(12),dp(12));
+                      if(currentTab.equals(option[2]))tab.setBackground(surface(0xff292335,0,18));
+                      nav.addView(tab);tab.setOnClickListener(v->{
+                          if(option[2].equals("Listas")){openListManager();return;}
+                          navigate(option[2]);
+                      });
+                  }
+                  slider.addView(nav);root.addView(slider,lp(-1,-2));
+              }
+              private void navigate(String tab){
+                  currentTab=tab;shown=80;selectedGroup="Todos";searchText="";render();
+              }
+              private void renderHome(LinearLayout root){
+                  LinearLayout home=page(scroller(root));
+                  LinearLayout hero=col();hero.setPadding(dp(19),dp(19),dp(19),dp(17));hero.setBackground(heroGradient());
+                  hero.addView(text("SUA CENTRAL DE ENTRETENIMENTO",11,GREEN,true));gap(hero,9);
+                  Entry top=first(MOVIES);if(top==null)top=first(SERIES);if(top==null)top=first(TV);
+                  final Entry picked=top;
+                  hero.addView(text(picked==null?"Tudo em um só lugar":picked.value.name,23,WHITE,true));gap(hero,7);
+                  hero.addView(text(picked==null?"TV ao vivo, filmes e séries organizados para você.":
+                          "Explore suas listas e escolha o que assistir.",13,SUB,false));gap(hero,12);
+                  LinearLayout links=row();Button watch=button("▶ Assistir",true);links.addView(watch,lp(132,46));
+                  watch.setOnClickListener(v->{if(picked!=null)playFullscreen(picked.value);else navigate(TV);});
+                  Button more=button("+ Minhas listas",false);LinearLayout.LayoutParams p=lp(-2,46);p.leftMargin=dp(8);
+                  links.addView(more,p);more.setOnClickListener(v->openListManager());
+                  hero.addView(links);home.addView(hero);gap(home,19);
+                  LinearLayout sections=row();home.addView(sections);
+                  addShortcut(sections,"▣","TV ao vivo",TV);
+                  addShortcut(sections,"▤","Filmes",MOVIES);
+                  addShortcut(sections,"▥","Séries",SERIES);
+                  gap(home,20);
+                  if(pending>0)home.addView(text("⟳ Carregando "+pending+" lista(s) IPTV...",13,YELLOW,false));
+                  if(!loadErrors.isEmpty())home.addView(text("Algumas listas não carregaram. Abra Listas para verificar.",12,YELLOW,false));
+                  addRecentStrip(home);
+                  addPosterStrip(home,"ÚLTIMOS FILMES ADICIONADOS",MOVIES,18);
+                  addPosterStrip(home,"SÉRIES",SERIES,18);
+                  addPosterStrip(home,"CANAIS AO VIVO",TV,18);
+                  addPosterStrip(home,"MEUS FAVORITOS","favorite",18);
+                  addProviderSection(home);
+              }
+              private void addShortcut(LinearLayout parent,String glyph,String label,String tab){
+                  LinearLayout card=col();card.setGravity(Gravity.CENTER);card.setPadding(dp(7),dp(13),dp(7),dp(12));
+                  card.setBackground(surface(0xff272231,0xff494052,14));
+                  card.addView(text(glyph,29,GREEN,true));gap(card,5);
+                  TextView name=text(label,12,WHITE,true);name.setGravity(Gravity.CENTER);card.addView(name);
+                  LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,dp(105),1);p.rightMargin=dp(8);
+                  parent.addView(card,p);card.setOnClickListener(v->navigate(tab));
+              }
+              private Entry first(String type){for(Entry e:all)if(e.value.kind.equals(type))return e;return null;}
+              private void addRecentStrip(LinearLayout page){
+                  ArrayList<Entry> recent=new ArrayList<>();
+                  try{
+                      JSONArray records=new JSONArray(settings.getString("recent","[]"));
+                      java.util.HashMap<String,Entry> lookup=new java.util.HashMap<>();
+                      for(Entry e:all)lookup.put(id(e.value),e);
+                      for(int n=0;n<records.length()&&recent.size()<18;n++){
+                          Entry e=lookup.get(records.optString(n));if(e!=null)recent.add(e);
+                      }
+                  }catch(Exception ignored){}
+                  if(recent.isEmpty())return;
+                  page.addView(text("CONTINUAR ASSISTINDO",16,WHITE,true));gap(page,10);
+                  HorizontalScrollView sc=new HorizontalScrollView(this);sc.setHorizontalScrollBarEnabled(false);
+                  LinearLayout strip=row();for(Entry e:recent)strip.addView(poster(e));
+                  sc.addView(strip);page.addView(sc);gap(page,20);
+              }
+              private void addPosterStrip(LinearLayout page,String heading,String type,int limit){
+                  ArrayList<Entry> items=new ArrayList<>();
+                  for(int i=all.size()-1;i>=0&&items.size()<limit;i--){
+                      Entry e=all.get(i);
+                      if(type.equals("favorite")?isFavorite(e.value):e.value.kind.equals(type))items.add(e);
+                  }
+                  LinearLayout title=row();title.addView(text(heading,16,WHITE,true),new LinearLayout.LayoutParams(0,-2,1));
+                  TextView viewAll=text("Ver todos ›",12,GREEN,true);title.addView(viewAll);
+                  viewAll.setOnClickListener(v->navigate(type.equals("favorite")?FAV:type));
+                  page.addView(title);gap(page,10);
+                  if(items.isEmpty()){
+                      TextView empty=text(type.equals(MOVIES)||type.equals(SERIES)?
+                              "Adicione uma lista com essa categoria para ver os pôsteres aqui.":"Nenhum item nesta seção por enquanto.",12,SUB,false);
+                      empty.setPadding(dp(8),dp(15),dp(8),dp(24));page.addView(empty);
+                  }else{
+                      HorizontalScrollView sc=new HorizontalScrollView(this);sc.setHorizontalScrollBarEnabled(false);
+                      LinearLayout row=row();for(Entry e:items)row.addView(poster(e));sc.addView(row);page.addView(sc);gap(page,20);
+                  }
+              }
+              private View poster(Entry e){
+                  Item item=e.value;LinearLayout panel=col();panel.setPadding(dp(3),dp(3),dp(3),dp(6));
+                  LinearLayout.LayoutParams p=lp(132,-2);p.rightMargin=dp(10);panel.setLayoutParams(p);
+                  FrameLayout art=new FrameLayout(this);art.setBackground(heroGradient());
+                  TextView letter=text(item.kind.equals(TV)?"▣":"▤",38,0xff857a98,true);letter.setGravity(Gravity.CENTER);
+                  art.addView(letter,new FrameLayout.LayoutParams(-1,-1));
+                  ImageView image=new ImageView(this);image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                  art.addView(image,new FrameLayout.LayoutParams(-1,-1));
+                  loadLogo(image,item.image);
+                  panel.addView(art,lp(-1,174));gap(panel,7);
+                  TextView name=text(item.name,12,WHITE,true);name.setMaxLines(2);name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                  panel.addView(name);gap(panel,3);
+                  TextView group=text(item.group.isEmpty()?item.kind:item.group,10,SUB,false);
+                  group.setSingleLine(true);group.setEllipsize(android.text.TextUtils.TruncateAt.END);panel.addView(group);
+                  panel.setOnClickListener(v->showDetails(e));return panel;
+              }
+              private void addProviderSection(LinearLayout page){
+                  page.addView(text("PLATAFORMAS OFICIAIS",15,WHITE,true));gap(page,8);
+                  page.addView(text("Atalhos externos; a Xena TV não transmite os catálogos dessas plataformas.",11,SUB,false));gap(page,10);
+                  LinearLayout r=row();Button yt=button("▶ YouTube",false),gl=button("◉ Globoplay",false);
+                  LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,dp(46),1);p.rightMargin=dp(9);r.addView(yt,p);
+                  r.addView(gl,new LinearLayout.LayoutParams(0,dp(46),1));page.addView(r);
+                  yt.setOnClickListener(v->openLink("https://www.youtube.com/"));
+                  gl.setOnClickListener(v->openLink("https://globoplay.globo.com/"));
+              }
+              private void openListManager(){refreshWhenBack=true;startActivity(new Intent(this,IPTVActivity.class));}
+              private void openLink(String address){
+                  try{Intent i=new Intent(Intent.ACTION_VIEW,Uri.parse(address));i.setPackage("com.brave.browser");startActivity(i);}
+                  catch(Exception e){try{startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(address)));}catch(Exception ignored){}}
+              }
+              private void renderCatalog(LinearLayout root,String kind){
+                  LinearLayout page=page(scroller(root));
+                  page.addView(text(kind.toUpperCase(Locale.ROOT),22,WHITE,true));gap(page,5);
+                  page.addView(text("Conteúdos identificados nas listas importadas.",12,SUB,false));gap(page,16);
+                  Entry featured=first(kind);
+                  if(featured!=null){
+                      LinearLayout hero=col();hero.setPadding(dp(14),dp(15),dp(14),dp(13));hero.setBackground(heroGradient());
+                      hero.addView(text(kind.equals(MOVIES)?"EM DESTAQUE • FILME":"EM DESTAQUE • SÉRIE",12,GREEN,true));gap(hero,8);
+                      hero.addView(text(featured.value.name,22,WHITE,true));gap(hero,8);
+                      hero.addView(text(featured.value.group,12,SUB,false));gap(hero,10);
+                      Button details=button("Ver detalhes",true);hero.addView(details,lp(150,46));
+                      details.setOnClickListener(v->showDetails(featured));page.addView(hero);gap(page,19);
+                  }
+                  addPosterStrip(page,kind.equals(MOVIES)?"TODOS OS FILMES":"TODAS AS SÉRIES",kind,30);
+                  LinkedHashMap<String,ArrayList<Entry>> grouped=new LinkedHashMap<>();
+                  for(Entry e:all)if(e.value.kind.equals(kind)){
+                      String g=e.value.group.isEmpty()?"Outros":e.value.group;
+                      if(!grouped.containsKey(g))grouped.put(g,new ArrayList<>());
+                      if(grouped.get(g).size()<18)grouped.get(g).add(e);
+                  }
+                  int sections=0;
+                  for(String g:grouped.keySet()){
+                      if(++sections>12)break;
+                      page.addView(text(g.toUpperCase(Locale.ROOT),16,WHITE,true));gap(page,9);
+                      HorizontalScrollView scroll=new HorizontalScrollView(this);LinearLayout strip=row();
+                      for(Entry e:grouped.get(g))strip.addView(poster(e));scroll.addView(strip);page.addView(scroll);gap(page,21);
+                  }
+                  if(featured==null)page.addView(text("Ainda não há "+kind.toLowerCase(Locale.ROOT)+
+                          " nesta instalação. Importe uma lista M3U com grupos apropriados.",13,SUB,false));
+              }
+              private void renderTelevision(LinearLayout root){
+                  isLandscape=getResources().getConfiguration().orientation==Configuration.ORIENTATION_LANDSCAPE;
+                  LinearLayout content=col();root.addView(content,new LinearLayout.LayoutParams(-1,0,1));
+                  LinearLayout header=row();header.setPadding(dp(14),dp(8),dp(14),dp(8));
+                  header.addView(text("TV AO VIVO",18,WHITE,true),new LinearLayout.LayoutParams(0,-2,1));
+                  TextView n=text(count(TV)+" canais",12,GREEN,true);header.addView(n);content.addView(header);
+                  EditText search=new EditText(this);search.setSingleLine(true);search.setTextColor(WHITE);
+                  search.setHintTextColor(SUB);search.setHint("⌕ Pesquisar canais");
+                  search.setPadding(dp(13),dp(5),dp(13),dp(5));search.setBackground(surface(PANEL2,0xff50405b,14));
+                  search.setText(searchText);content.addView(search,lp(-1,47));
+                  search.addTextChangedListener(new TextWatcher(){
+                      public void beforeTextChanged(CharSequence s,int st,int c,int a){}
+                      public void onTextChanged(CharSequence s,int st,int before,int count){
+                          searchText=s.toString();shown=80;renderChannelRows();
+                      }
+                      public void afterTextChanged(Editable e){}
+                  });gap(content,8);
+                  LinearLayout panels=row();panels.setGravity(Gravity.TOP);content.addView(panels,new LinearLayout.LayoutParams(-1,0,1));
+                  ScrollView catScroll=new ScrollView(this);categoriesBox=col();categoriesBox.setPadding(dp(9),dp(7),dp(7),0);
+                  catScroll.addView(categoriesBox);catScroll.setBackgroundColor(0xff17131c);
+                  panels.addView(catScroll,new LinearLayout.LayoutParams(0,-1,isLandscape?0.23f:0.34f));
+                  ScrollView channelScroll=new ScrollView(this);centerRows=col();centerRows.setPadding(dp(8),dp(7),dp(8),dp(12));
+                  channelScroll.addView(centerRows);
+                  panels.addView(channelScroll,new LinearLayout.LayoutParams(0,-1,isLandscape?0.39f:0.66f));
+                  if(isLandscape){
+                      previewBox=col();previewBox.setPadding(dp(8),dp(7),dp(8),dp(7));
+                      previewBox.setBackgroundColor(0xff111019);
+                      panels.addView(previewBox,new LinearLayout.LayoutParams(0,-1,0.38f));
+                  }else previewBox=null;
+                  renderCategories();renderChannelRows();
+                  if(previewBox!=null){if(selectedItem!=null)showPreview(selectedItem);else showPreviewMessage();}
+              }
+              private void renderCategories(){
+                  if(categoriesBox==null)return;categoriesBox.removeAllViews();
+                  LinkedHashMap<String,Integer> counts=new LinkedHashMap<>();counts.put("Todos",0);
+                  counts.put("Recentes",0);counts.put("Favoritos",0);
+                  for(Entry e:all){Item i=e.value;if(!i.kind.equals(TV))continue;
+                      counts.put("Todos",counts.get("Todos")+1);
+                      if(isRecent(i))counts.put("Recentes",counts.get("Recentes")+1);
+                      if(isFavorite(i))counts.put("Favoritos",counts.get("Favoritos")+1);
+                      String group=i.group.isEmpty()?"Outros":i.group;
+                      counts.put(group,counts.containsKey(group)?counts.get(group)+1:1);
+                  }
+                  for(String category:counts.keySet()){
+                      LinearLayout label=col();label.setPadding(dp(8),dp(10),dp(5),dp(10));
+                      if(category.equals(selectedGroup))label.setBackground(surface(0xff332944,0,9));
+                      TextView title=text(category,12,category.equals(selectedGroup)?YELLOW:WHITE,true);
+                      title.setMaxLines(2);title.setEllipsize(android.text.TextUtils.TruncateAt.END);label.addView(title);
+                      label.addView(text(String.valueOf(counts.get(category)),11,category.equals(selectedGroup)?GREEN:SUB,false));
+                      LinearLayout.LayoutParams p=lp(-1,-2);p.bottomMargin=dp(5);categoriesBox.addView(label,p);
+                      label.setOnClickListener(v->{selectedGroup=category;shown=80;renderCategories();renderChannelRows();});
+                  }
+              }
+              private boolean accepts(Item item){
+                  if(!item.kind.equals(TV))return false;
+                  boolean group=selectedGroup.equals("Todos")||
+                          (selectedGroup.equals("Favoritos")&&isFavorite(item))||
+                          (selectedGroup.equals("Recentes")&&isRecent(item))||
+                          selectedGroup.equals(item.group.isEmpty()?"Outros":item.group);
+                  if(!group)return false;
+                  String s=searchText.trim().toLowerCase(Locale.ROOT);
+                  return s.isEmpty()||item.name.toLowerCase(Locale.ROOT).contains(s)||item.group.toLowerCase(Locale.ROOT).contains(s);
+              }
+              private void renderChannelRows(){
+                  if(centerRows==null||!currentTab.equals(TV))return;
+                  centerRows.removeAllViews();highlightedRow=null;
+                  int found=0,drawn=0;
+                  for(Entry e:all){
+                      Item item=e.value;if(!accepts(item))continue;found++;
+                      if(drawn++>=shown)continue;
+                      LinearLayout c=row();c.setPadding(dp(4),dp(9),dp(5),dp(9));
+                      c.setBackground(surface(item==selectedItem?0xff3a2a4b:0x0017171d,0,11));
+                      TextView number=text(String.valueOf(found),11,SUB,false);number.setGravity(Gravity.CENTER);
+                      c.addView(number,lp(24,38));
+                      FrameLayout logo=new FrameLayout(this);logo.setBackground(surface(0xff342d3b,0,7));
+                      TextView icon=text("▣",20,GREEN,true);icon.setGravity(Gravity.CENTER);
+                      logo.addView(icon,new FrameLayout.LayoutParams(-1,-1));
+                      ImageView image=new ImageView(this);image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                      logo.addView(image,new FrameLayout.LayoutParams(-1,-1));loadLogo(image,item.image);
+                      c.addView(logo,lp(40,40));
+                      LinearLayout labels=col();labels.setPadding(dp(9),0,dp(3),0);
+                      TextView name=text(item.name,13,WHITE,true);name.setMaxLines(2);
+                      name.setEllipsize(android.text.TextUtils.TruncateAt.END);labels.addView(name);
+                      TextView group=text(item.group,10,SUB,false);group.setMaxLines(1);
+                      group.setEllipsize(android.text.TextUtils.TruncateAt.END);labels.addView(group);
+                      c.addView(labels,new LinearLayout.LayoutParams(0,-2,1));
+                      LinearLayout.LayoutParams cp=lp(-1,-2);cp.bottomMargin=dp(4);centerRows.addView(c,cp);
+                      if(item==selectedItem)highlightedRow=c;
+                      c.setOnClickListener(v->{
+                          rememberRecent(item);
+                          if(isLandscape){
+                              if(highlightedRow!=null)highlightedRow.setBackground(surface(0x0017171d,0,11));
+                              highlightedRow=c;highlightedRow.setBackground(surface(0xff3a2a4b,0,11));
+                              selectedItem=item;showPreview(item);
+                          }else playFullscreen(item);
+                      });
+                  }
+                  if(found==0){TextView msg=text("Nenhum canal encontrado.",13,SUB,false);msg.setPadding(dp(8),dp(15),dp(8),dp(15));centerRows.addView(msg);}
+                  if(found>shown){
+                      Button more=button("Mostrar mais ("+(found-shown)+")",false);
+                      centerRows.addView(more,lp(-1,45));more.setOnClickListener(v->{shown+=100;renderChannelRows();});
+                  }
+              }
+              private void showPreviewMessage(){
+                  if(previewBox==null)return;previewBox.removeAllViews();
+                  previewBox.addView(text("PRÉVIA DO CANAL",15,WHITE,true));gap(previewBox,15);
+                  LinearLayout box=col();box.setGravity(Gravity.CENTER);
+                  box.setBackground(heroGradient());box.addView(text("▣",44,GREEN,true));
+                  TextView msg=text("Selecione um canal à esquerda para reproduzir aqui.",13,SUB,false);
+                  msg.setGravity(Gravity.CENTER);box.addView(msg);previewBox.addView(box,lp(-1,225));
+              }
+              private void showPreview(Item item){
+                  if(previewBox==null)return;stopPlayer();previewBox.removeAllViews();
+                  TextView title=text(item.name,16,WHITE,true);previewBox.addView(title);gap(previewBox,8);
+                  FrameLayout area=new FrameLayout(this);area.setBackgroundColor(Color.BLACK);
+                  previewBox.addView(area,lp(-1,205));
+                  VLCVideoLayout video=new VLCVideoLayout(this);area.addView(video,new FrameLayout.LayoutParams(-1,-1));
+                  TextView state=text("Conectando ao sinal...",12,GREEN,false);previewBox.addView(state);gap(previewBox,10);
+                  Button fullscreen=button("▶ Tela cheia",true);previewBox.addView(fullscreen,lp(-1,43));
+                  fullscreen.setOnClickListener(v->playFullscreen(item));gap(previewBox,10);
+                  Button favorite=button(isFavorite(item)?"★ Remover favorito":"☆ Favoritar",false);
+                  previewBox.addView(favorite,lp(-1,43));
+                  favorite.setOnClickListener(v->{toggleFavorite(item);favorite.setText(isFavorite(item)?"★ Remover favorito":"☆ Favoritar");});
+                  gap(previewBox,12);previewBox.addView(text("Programação: indisponível sem EPG da fonte.",11,SUB,false));
+                  startMedia(item,video,state);
+              }
+              private void renderFavorites(LinearLayout root){
+                  LinearLayout page=page(scroller(root));page.addView(text("MEUS FAVORITOS",22,WHITE,true));gap(page,12);
+                  addPosterStrip(page,"MEUS ITENS FAVORITOS", "favorite",35);
+                  int n=0;for(Entry e:all)if(isFavorite(e.value))n++;
+                  page.addView(text(n+" itens favoritos nas suas fontes.",12,SUB,false));
+              }
+              private void renderSearch(LinearLayout root){
+                  LinearLayout page=page(scroller(root));page.addView(text("BUSCA GLOBAL",22,WHITE,true));gap(page,12);
+                  EditText search=new EditText(this);search.setSingleLine(true);search.setTextColor(WHITE);
+                  search.setHintTextColor(SUB);search.setHint("Buscar em TV, filmes e séries");
+                  search.setBackground(surface(PANEL2,0xff59486c,13));search.setPadding(dp(14),dp(9),dp(14),dp(9));
+                  page.addView(search,lp(-1,52));gap(page,14);
+                  LinearLayout results=col();page.addView(results);
+                  search.addTextChangedListener(new TextWatcher(){
+                      public void beforeTextChanged(CharSequence s,int a,int c,int f){}
+                      public void onTextChanged(CharSequence s,int st,int before,int count){drawSearch(results,s.toString());}
+                      public void afterTextChanged(Editable e){}
+                  });
+                  drawSearch(results,"");
+              }
+              private void drawSearch(LinearLayout results,String value){
+                  results.removeAllViews();
+                  String term=value.toLowerCase(Locale.ROOT).trim();
+                  if(term.isEmpty()){results.addView(text("Digite o nome de um canal, filme, série ou categoria.",12,SUB,false));return;}
+                  int matched=0;
+                  for(Entry e:all){Item i=e.value;
+                      if(!i.name.toLowerCase(Locale.ROOT).contains(term)&&!i.group.toLowerCase(Locale.ROOT).contains(term))continue;
+                      matched++;
+                      if(matched>85)continue;
+                      LinearLayout cell=row();cell.setPadding(dp(9),dp(10),dp(9),dp(10));cell.setBackground(surface(PANEL,0xff4a3c57,10));
+                      LinearLayout label=col();label.addView(text(i.name,14,WHITE,true));
+                      label.addView(text(i.kind+" • "+i.group,11,SUB,false));cell.addView(label,new LinearLayout.LayoutParams(0,-2,1));
+                      TextView play=text("›",26,GREEN,true);cell.addView(play);
+                      LinearLayout.LayoutParams p=lp(-1,-2);p.bottomMargin=dp(6);results.addView(cell,p);
+                      cell.setOnClickListener(v->{if(i.kind.equals(TV))playFullscreen(i);else showDetails(e);});
+                  }
+                  if(matched==0)results.addView(text("Nada encontrado.",13,SUB,false));
+                  else if(matched>85)results.addView(text("Mostrando os primeiros 85 resultados. Refine a busca.",12,SUB,false));
+              }
+              private void showDetails(Entry e){
+                  if(showingFullScreen)return;stopPlayer();showingDetails=true;detailsItem=e;
+                  LinearLayout main=col();main.setBackgroundColor(BG);setContentView(main);
+                  ScrollView scroll=scroller(main);LinearLayout page=page(scroll);
+                  Button back=button("‹ Voltar",false);page.addView(back,lp(110,45));back.setOnClickListener(v->closeDetails());gap(page,15);
+                  FrameLayout backdrop=new FrameLayout(this);backdrop.setBackground(heroGradient());
+                  ImageView image=new ImageView(this);image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                  backdrop.addView(image,new FrameLayout.LayoutParams(-1,-1));
+                  loadLogo(image,e.value.image);page.addView(backdrop,lp(-1,230));gap(page,17);
+                  page.addView(text(e.value.name,26,WHITE,true));gap(page,8);
+                  page.addView(text(e.value.kind+" • "+(e.value.group.isEmpty()?"Sem categoria":e.value.group),13,GREEN,true));gap(page,10);
+                  page.addView(text("Fonte: "+e.value.source,12,SUB,false));gap(page,14);
+                  page.addView(text("Detalhes exibidos conforme os dados disponíveis na lista. Sinopse, elenco e avaliação não foram informados.",12,SUB,false));gap(page,15);
+                  LinearLayout actions=row();Button watch=button("▶ Reproduzir",true);
+                  actions.addView(watch,new LinearLayout.LayoutParams(0,dp(49),1));
+                  Button favorite=button(isFavorite(e.value)?"★ Favorito":"☆ Favoritar",false);
+                  LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,dp(49),1);p.leftMargin=dp(9);
+                  actions.addView(favorite,p);page.addView(actions);
+                  watch.setOnClickListener(v->playFullscreen(e.value));
+                  favorite.setOnClickListener(v->{toggleFavorite(e.value);favorite.setText(isFavorite(e.value)?"★ Favorito":"☆ Favoritar");});
+                  gap(page,20);page.addView(text("MAIS DA MESMA CATEGORIA",15,WHITE,true));gap(page,9);
+                  HorizontalScrollView other=new HorizontalScrollView(this);LinearLayout strip=row();int n=0;
+                  for(Entry candidate:all){
+                      if(candidate==e||!candidate.value.kind.equals(e.value.kind)||!candidate.value.group.equals(e.value.group))continue;
+                      strip.addView(poster(candidate));if(++n>=15)break;
+                  }
+                  other.addView(strip);page.addView(other);
+              }
+              private void closeDetails(){showingDetails=false;detailsItem=null;render();}
+              private void playFullscreen(Item item){
+                  stopPlayer();selectedItem=item;showingFullScreen=true;rememberRecent(item);
+                  LinearLayout root=col();root.setBackgroundColor(Color.BLACK);setContentView(root);
+                  LinearLayout top=row();top.setPadding(dp(9),dp(8),dp(9),dp(6));
+                  Button back=button("‹ Voltar",false);top.addView(back,lp(106,44));back.setOnClickListener(v->closeFullscreen());
+                  TextView title=text(item.name,15,WHITE,true);title.setMaxLines(1);
+                  title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                  LinearLayout.LayoutParams tp=new LinearLayout.LayoutParams(0,-2,1);tp.leftMargin=dp(12);
+                  top.addView(title,tp);root.addView(top);
+                  FrameLayout videoFrame=new FrameLayout(this);videoFrame.setBackgroundColor(Color.BLACK);
+                  root.addView(videoFrame,new LinearLayout.LayoutParams(-1,0,1));
+                  VLCVideoLayout video=new VLCVideoLayout(this);
+                  videoFrame.addView(video,new FrameLayout.LayoutParams(-1,-1));
+                  TextView status=text("Conectando...",12,GREEN,false);status.setGravity(Gravity.CENTER);
+                  root.addView(status,lp(-1,42));
+                  LinearLayout controls=row();controls.setPadding(dp(9),0,dp(9),dp(8));
+                  Button reconnect=button("↻ Reconectar",false),favorite=button(isFavorite(item)?"★ Favorito":"☆ Favoritar",false);
+                  LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,dp(47),1);p.rightMargin=dp(7);
+                  controls.addView(reconnect,p);controls.addView(favorite,new LinearLayout.LayoutParams(0,dp(47),1));
+                  root.addView(controls);
+                  reconnect.setOnClickListener(v->playFullscreen(item));
+                  favorite.setOnClickListener(v->{toggleFavorite(item);favorite.setText(isFavorite(item)?"★ Favorito":"☆ Favoritar");});
+                  startMedia(item,video,status);
+              }
+              private void closeFullscreen(){
+                  stopPlayer();showingFullScreen=false;
+                  if(showingDetails&&detailsItem!=null)showDetails(detailsItem);else render();
+              }
+              private void startMedia(Item item,VLCVideoLayout view,TextView status){
+                  try{
+                      if(libVlc==null){ArrayList<String> opts=new ArrayList<>();opts.add("--network-caching=1600");opts.add("--http-reconnect");libVlc=new LibVLC(this,opts);}
+                      mediaPlayer=new MediaPlayer(libVlc);mediaPlayer.attachViews(view,null,false,false);
+                      final MediaPlayer current=mediaPlayer;
+                      current.setEventListener(event->runOnUiThread(()->{
+                          if(current!=mediaPlayer)return;
+                          if(event.type==MediaPlayer.Event.Playing)status.setText("● Reproduzindo");
+                          else if(event.type==MediaPlayer.Event.Buffering)status.setText("Carregando vídeo...");
+                          else if(event.type==MediaPlayer.Event.EncounteredError)status.setText("Falha ao reproduzir. Verifique o endereço ou a fonte.");
+                          else if(event.type==MediaPlayer.Event.EndReached)status.setText("Reprodução encerrada.");
+                      }));
+                      Media media=new Media(libVlc,Uri.parse(item.url));
+                      media.addOption(":network-caching=1600");media.addOption(":http-reconnect=true");
+                      current.setMedia(media);media.release();current.play();
+                  }catch(Exception e){status.setText("Erro: "+e.getClass().getSimpleName());}
+              }
+              private void stopPlayer(){
+                  if(mediaPlayer!=null){
+                      try{mediaPlayer.stop();if(mediaPlayer.getVLCVout().areViewsAttached())mediaPlayer.detachViews();}
+                      catch(Exception ignored){}
+                      mediaPlayer.release();mediaPlayer=null;
+                  }
+              }
+              private String id(Item item){return Integer.toHexString(item.url.hashCode());}
+              private boolean isFavorite(Item item){return settings.getBoolean("favorite_"+id(item),false);}
+              private void toggleFavorite(Item item){settings.edit().putBoolean("favorite_"+id(item),!isFavorite(item)).apply();}
+              private void rememberRecent(Item item){
+                  try{
+                      JSONArray array=new JSONArray(settings.getString("recent","[]"));
+                      JSONArray out=new JSONArray();out.put(id(item));
+                      for(int i=0;i<array.length()&&out.length()<40;i++){
+                          String old=array.optString(i);if(!old.equals(id(item)))out.put(old);
+                      }
+                      settings.edit().putString("recent",out.toString()).apply();
+                  }catch(Exception ignored){}
+              }
+              private boolean isRecent(Item item){
+                  try{return settings.getString("recent","[]").contains("\""+id(item)+"\"");}
+                  catch(Exception e){return false;}
+              }
+              private void loadLogo(ImageView target,String imageUrl){
+                  if(imageUrl==null||!imageUrl.matches("(?i)^https?://.+"))return;
+                  target.setTag(imageUrl);Bitmap cached=logoCache.get(imageUrl);
+                  if(cached!=null){target.setImageBitmap(cached);return;}
+                  new Thread(()->{
+                      HttpURLConnection conn=null;
+                      try{
+                          URL url=new URL(imageUrl);conn=(HttpURLConnection)url.openConnection();
+                          conn.setConnectTimeout(6000);conn.setReadTimeout(6000);
+                          conn.setInstanceFollowRedirects(true);
+                          if(conn.getContentLength()>2*1024*1024)return;
+                          try(InputStream stream=conn.getInputStream()){
+                              BitmapFactory.Options opts=new BitmapFactory.Options();opts.inSampleSize=4;
+                              Bitmap bitmap=BitmapFactory.decodeStream(stream,null,opts);
+                              if(bitmap==null)return;
+                              logoCache.put(imageUrl,bitmap);
+                              runOnUiThread(()->{if(imageUrl.equals(target.getTag()))target.setImageBitmap(bitmap);});
+                          }
+                      }catch(Exception ignored){}finally{if(conn!=null)conn.disconnect();}
+                  },"XenaTV-Art").start();
+              }
+              @Override public void onConfigurationChanged(Configuration configuration){
+                  super.onConfigurationChanged(configuration);
+                  isLandscape=configuration.orientation==Configuration.ORIENTATION_LANDSCAPE;
+                  if(!showingFullScreen&&!showingDetails)render();
+              }
+              @Override public void onBackPressed(){
+                  if(showingFullScreen){closeFullscreen();return;}
+                  if(showingDetails){closeDetails();return;}
+                  if(!currentTab.equals(HOME)){navigate(HOME);return;}
+                  super.onBackPressed();
+              }
+              @Override protected void onDestroy(){generation++;stopPlayer();if(libVlc!=null){libVlc.release();libVlc=null;}super.onDestroy();}
+          }
+          XENA_MAIN_JAVA
+          cat > xena-build/XenaTV_Android/app/src/main/java/br/com/xenatv/app/IPTVActivity.java <<'XENA_IPTV_JAVA'
+          package br.com.xenatv.app;
+
+          import android.app.Activity;
+          import android.app.AlertDialog;
+          import android.content.Context;
+          import android.content.SharedPreferences;
+          import android.graphics.Color;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.text.Editable;
+          import android.text.TextWatcher;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.widget.Button;
+          import android.widget.EditText;
+          import android.widget.FrameLayout;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+          import org.videolan.libvlc.LibVLC;
+          import org.videolan.libvlc.Media;
+          import org.videolan.libvlc.MediaPlayer;
+          import org.videolan.libvlc.util.VLCVideoLayout;
+          import java.util.ArrayList;
+          import java.util.Locale;
+          import java.util.UUID;
+
+          /** Gerenciador local de listas M3U e links diretos; não hospeda nem retransmite conteúdo. */
+          public class IPTVActivity extends Activity {
+              private static final int BG=0xff0c0816, PANEL=0xff1e1530, PURPLE=0xffa45aff, GREEN=0xff3aff9d;
+              private static final int WHITE=0xfff7f4ff, MUTED=0xffad9fbe;
+              private SharedPreferences preferences;
+              private final ArrayList<Source> sources=new ArrayList<>();
+              private LinearLayout groups;
+              private String query="";
+              private LibVLC libVlc;
+              private MediaPlayer mediaPlayer;
+              private boolean showingPlayer=false;
+
+              private static class IptvChannel {
+                  final String name, url, category;
+                  IptvChannel(String n,String u,String g){name=n;url=u;category=g;}
+              }
+              private static class Source {
+                  String id,name,url,status="Carregando...";
+                  ArrayList<IptvChannel> channels=new ArrayList<>();
+                  int revision=0, shown=80;
+                  Source(String i,String n,String u){id=i;name=n;url=u;}
+              }
+              @Override public void onCreate(Bundle b){
+                  super.onCreate(b);
+                  getWindow().setStatusBarColor(BG);getWindow().setNavigationBarColor(BG);
+                  preferences=getSharedPreferences("xena_iptv_private_v1",Context.MODE_PRIVATE);
+                  loadSources();createUI();
+                  for(Source s:new ArrayList<>(sources))refresh(s);
+              }
+              private int dp(float p){return (int)(p*getResources().getDisplayMetrics().density+0.5f);}
+              private GradientDrawable background(int color,int border){
+                  GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(dp(13));
+                  if(border!=0)d.setStroke(dp(1),border);return d;
+              }
+              private LinearLayout column(){LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.VERTICAL);return l;}
+              private LinearLayout row(){LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.HORIZONTAL);l.setGravity(Gravity.CENTER_VERTICAL);return l;}
+              private LinearLayout.LayoutParams params(int w,int h){
+                  return new LinearLayout.LayoutParams(w<0?w:dp(w),h<0?h:dp(h));
+              }
+              private void space(LinearLayout l,int h){l.addView(new View(this),params(1,h));}
+              private TextView text(String value,int size,int color,boolean bold){
+                  TextView v=new TextView(this);v.setText(value);v.setTextSize(size);v.setTextColor(color);
+                  if(bold)v.setTypeface(Typeface.DEFAULT,Typeface.BOLD);return v;
+              }
+              private Button button(String name,boolean primary){
+                  Button b=new Button(this);b.setAllCaps(false);b.setText(name);b.setTextSize(13);
+                  b.setTextColor(primary?BG:WHITE);b.setBackground(background(primary?GREEN:0xff3b2757,0));return b;
+              }
+              private void createUI(){
+                  showingPlayer=false;
+                  ScrollView scroll=new ScrollView(this);scroll.setBackgroundColor(BG);setContentView(scroll);
+                  LinearLayout page=column();page.setPadding(dp(16),dp(17),dp(16),dp(30));scroll.addView(page);
+                  LinearLayout top=row();
+                  Button back=button("‹ Voltar",false);top.addView(back,params(102,45));back.setOnClickListener(v->finish());
+                  TextView heading=text("  MINHAS LISTAS IPTV",17,WHITE,true);top.addView(heading);
+                  page.addView(top);space(page,18);
+                  LinearLayout intro=column();intro.setPadding(dp(16),dp(17),dp(16),dp(17));
+                  intro.setBackground(background(PANEL,PURPLE));
+                  intro.addView(text("IPTV + M3U",22,GREEN,true));space(intro,6);
+                  intro.addView(text("Adicione playlists M3U/M3U8 ou links de canais. As fontes ficam salvas neste aparelho.",13,WHITE,false));
+                  page.addView(intro);space(page,14);
+                  Button add=button("＋  Adicionar lista ou canal",true);page.addView(add,params(-1,50));
+                  add.setOnClickListener(v->editSource(null));space(page,14);
+                  EditText search=new EditText(this);search.setSingleLine(true);search.setTextColor(WHITE);
+                  search.setHintTextColor(MUTED);search.setHint("Buscar nos meus canais");
+                  search.setPadding(dp(15),dp(8),dp(15),dp(8));search.setBackground(background(PANEL,0xff583676));
+                  page.addView(search,params(-1,48));space(page,14);
+                  groups=column();page.addView(groups);
+                  search.addTextChangedListener(new TextWatcher(){
+                      public void beforeTextChanged(CharSequence s,int a,int c,int f){}
+                      public void onTextChanged(CharSequence s,int st,int before,int count){
+                          query=s.toString().trim().toLowerCase(Locale.ROOT);renderGroups();
+                      }
+                      public void afterTextChanged(Editable e){}
+                  });
+                  space(page,18);
+                  page.addView(text("Use fontes autorizadas. Links expirados, bloqueados ou com DRM podem não funcionar. URLs HTTP não são criptografadas.",11,MUTED,false));
+                  renderGroups();
+              }
+              private void renderGroups(){
+                  if(groups==null||showingPlayer)return;
+                  groups.removeAllViews();
+                  if(sources.isEmpty()){
+                      TextView empty=text("Nenhuma lista cadastrada. Toque em Adicionar para começar.",14,MUTED,false);
+                      empty.setPadding(dp(8),dp(16),dp(8),dp(20));groups.addView(empty);return;
+                  }
+                  for(Source s:sources){
+                      LinearLayout box=column();box.setPadding(dp(12),dp(13),dp(12),dp(12));
+                      box.setBackground(background(PANEL,0xff563878));
+                      box.addView(text(s.name,17,WHITE,true));space(box,4);
+                      box.addView(text(s.status,12,GREEN,false));space(box,9);
+                      LinearLayout actions=row();
+                      Button edit=button("Editar",false), reload=button("Atualizar",false), remove=button("Excluir",false);
+                      LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,dp(43),1);p.rightMargin=dp(5);
+                      actions.addView(edit,p);LinearLayout.LayoutParams p2=new LinearLayout.LayoutParams(0,dp(43),1);p2.rightMargin=dp(5);
+                      actions.addView(reload,p2);actions.addView(remove,new LinearLayout.LayoutParams(0,dp(43),1));
+                      edit.setOnClickListener(v->editSource(s));reload.setOnClickListener(v->refresh(s));
+                      remove.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("Excluir lista?")
+                          .setMessage("Remover \""+s.name+"\" deste aparelho?")
+                          .setNegativeButton("Cancelar",null).setPositiveButton("Excluir",(d,w)->{
+                              s.revision++;sources.remove(s);saveSources();renderGroups();
+                          }).show());
+                      box.addView(actions);space(box,10);
+                      int matched=0,shown=0;
+                      for(IptvChannel c:s.channels){
+                          if(!query.isEmpty()&&!c.name.toLowerCase(Locale.ROOT).contains(query)
+                              &&!c.category.toLowerCase(Locale.ROOT).contains(query))continue;
+                          matched++;if(shown>=s.shown)continue;shown++;
+                          LinearLayout channel=column();channel.setPadding(dp(12),dp(10),dp(12),dp(10));
+                          channel.setBackground(background(0xff2b2040,0));
+                          channel.addView(text("▶  "+c.name,14,WHITE,true));
+                          if(!c.category.isEmpty()){space(channel,4);channel.addView(text(c.category,11,MUTED,false));}
+                          channel.setOnClickListener(v->play(c));
+                          LinearLayout.LayoutParams cp=params(-1,-2);cp.bottomMargin=dp(6);box.addView(channel,cp);
+                      }
+                      if(matched>s.shown){
+                          Button more=button("Mostrar mais ("+matched+" encontrados)",false);
+                          more.setOnClickListener(v->{s.shown+=100;renderGroups();});box.addView(more,params(-1,44));
+                      }else if(!query.isEmpty()&&matched==0&&s.channels.size()>0){
+                          box.addView(text("Nenhum canal corresponde à busca.",12,MUTED,false));
+                      }
+                      LinearLayout.LayoutParams bp=params(-1,-2);bp.bottomMargin=dp(13);groups.addView(box,bp);
+                  }
+              }
+              private void editSource(Source editing){
+                  LinearLayout form=column();form.setPadding(dp(22),dp(8),dp(22),0);
+                  EditText name=new EditText(this);name.setSingleLine(true);name.setHint("Nome da lista ou canal");
+                  name.setText(editing==null?"":editing.name);form.addView(name);
+                  EditText url=new EditText(this);url.setSingleLine(true);
+                  url.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_URI);
+                  url.setHint("https://exemplo.com/lista.m3u");
+                  url.setText(editing==null?"":editing.url);form.addView(url);
+                  new AlertDialog.Builder(this).setTitle(editing==null?"Adicionar IPTV / M3U":"Editar fonte IPTV")
+                      .setView(form).setNegativeButton("Cancelar",null)
+                      .setPositiveButton("Salvar",(d,w)->{
+                          String n=name.getText().toString().trim(),u=url.getText().toString().trim();
+                          if(n.isEmpty()||!validUrl(u)){
+                              new AlertDialog.Builder(this).setMessage("Informe um nome e um link válido começando com http://, https://, rtsp:// ou rtmp://.").setPositiveButton("OK",null).show();
+                              return;
+                          }
+                          Source s=editing;
+                          if(s==null){s=new Source(UUID.randomUUID().toString(),n,u);sources.add(s);}
+                          else{s.name=n;s.url=u;}
+                          s.shown=80;saveSources();renderGroups();refresh(s);
+                      }).show();
+              }
+              private boolean validUrl(String value){
+                  try {
+                      Uri u=Uri.parse(value);String scheme=u.getScheme();
+                      if(scheme==null||u.getHost()==null||u.getHost().trim().isEmpty())return false;
+                      return scheme.equalsIgnoreCase("http")||scheme.equalsIgnoreCase("https")
+                          ||scheme.equalsIgnoreCase("rtsp")||scheme.equalsIgnoreCase("rtmp");
+                  }catch(Exception e){return false;}
+              }
+              private void loadSources(){
+                  try{
+                      JSONArray data=new JSONArray(preferences.getString("sources","[]"));
+                      for(int i=0;i<data.length();i++){
+                          JSONObject o=data.getJSONObject(i);
+                          String url=o.optString("url","");
+                          if(validUrl(url))sources.add(new Source(o.optString("id",UUID.randomUUID().toString()),o.optString("name","Minha lista"),url));
+                      }
+                  }catch(Exception ignored){}
+              }
+              private void saveSources(){
+                  JSONArray data=new JSONArray();
+                  try{for(Source s:sources){
+                      JSONObject o=new JSONObject();o.put("id",s.id);o.put("name",s.name);o.put("url",s.url);data.put(o);
+                  }}catch(Exception ignored){}
+                  preferences.edit().putString("sources",data.toString()).apply();
+              }
+              private void refresh(Source s){
+                  final int revision=++s.revision;
+                  final String url=s.url;
+                  final String name=s.name;
+                  s.status="Importando lista...";
+                  s.channels.clear();
+                  renderGroups();
+                  new Thread(()->{
+                      ArrayList<IptvChannel> found=new ArrayList<>();
+                      String status;
+                      try{
+                          M3UStreamParser.Result result=M3UStreamParser.importUrl(name,url);
+                          for(M3UStreamParser.Channel c:result.channels){
+                              found.add(new IptvChannel(c.name,c.url,c.category));
+                          }
+                          status=result.direct ? "Link de transmissão • toque para assistir"
+                                  :found.size()+" canais carregados"+(result.limited?" • limite de 60.000 canais":"")+" • toque para assistir";
+                      }catch(Exception e){
+                          status="Não foi possível carregar: "+e.getMessage();
+                      }
+                      final ArrayList<IptvChannel> items=found;
+                      final String message=status;
+                      runOnUiThread(()->{
+                          if(isFinishing()||isDestroyed()||!sources.contains(s)||revision!=s.revision)return;
+                          s.channels=items;
+                          s.status=message;
+                          renderGroups();
+                      });
+                  }).start();
+              }
+              private void play(IptvChannel channel){
+                  showingPlayer=true;
+                  LinearLayout page=column();page.setBackgroundColor(Color.BLACK);setContentView(page);
+                  LinearLayout header=row();header.setPadding(dp(9),dp(9),dp(9),dp(9));
+                  Button back=button("‹ Canais",false);header.addView(back,params(105,45));
+                  back.setOnClickListener(v->closePlayer());
+                  header.addView(text("  "+channel.name,15,WHITE,true));page.addView(header);
+                  FrameLayout video=new FrameLayout(this);video.setBackgroundColor(Color.BLACK);
+                  page.addView(video,new LinearLayout.LayoutParams(-1,0,1));
+                  VLCVideoLayout vlc=new VLCVideoLayout(this);
+                  video.addView(vlc,new FrameLayout.LayoutParams(-1,-1));
+                  TextView status=text("Conectando...",13,GREEN,false);status.setGravity(Gravity.CENTER);
+                  page.addView(status,params(-1,45));
+                  Button retry=button("↻ Reconectar",false);page.addView(retry,params(-1,49));
+                  retry.setOnClickListener(v->play(channel));
+                  try{
+                      stopMedia();
+                      if(libVlc==null){
+                          ArrayList<String> options=new ArrayList<>();options.add("--network-caching=1500");
+                          options.add("--http-reconnect");libVlc=new LibVLC(this,options);
+                      }
+                      mediaPlayer=new MediaPlayer(libVlc);
+                      mediaPlayer.attachViews(vlc,null,false,false);
+                      final MediaPlayer active=mediaPlayer;
+                      active.setEventListener(e->runOnUiThread(()->{
+                          if(active!=mediaPlayer)return;
+                          if(e.type==MediaPlayer.Event.Playing)status.setText("● Reproduzindo");
+                          else if(e.type==MediaPlayer.Event.Buffering)status.setText("Carregando vídeo...");
+                          else if(e.type==MediaPlayer.Event.EncounteredError)status.setText("Erro no sinal. Confira o link ou tente novamente.");
+                          else if(e.type==MediaPlayer.Event.EndReached)status.setText("Transmissão encerrada.");
+                      }));
+                      Media m=new Media(libVlc,Uri.parse(channel.url));
+                      m.addOption(":network-caching=1500");m.addOption(":http-reconnect=true");
+                      active.setMedia(m);m.release();active.play();
+                  }catch(Exception e){status.setText("Não foi possível iniciar: "+e.getClass().getSimpleName());}
+              }
+              private void stopMedia(){
+                  if(mediaPlayer!=null){
+                      mediaPlayer.stop();
+                      if(mediaPlayer.getVLCVout().areViewsAttached())mediaPlayer.detachViews();
+                      mediaPlayer.release();mediaPlayer=null;
+                  }
+              }
+              private void closePlayer(){
+                  stopMedia();if(showingPlayer){showingPlayer=false;createUI();}
+              }
+              @Override public void onBackPressed(){
+                  if(showingPlayer){closePlayer();return;}super.onBackPressed();
+              }
+              @Override protected void onDestroy(){
+                  stopMedia();if(libVlc!=null){libVlc.release();libVlc=null;}
+                  super.onDestroy();
+              }
+          }
+          XENA_IPTV_JAVA
+          cat > xena-build/XenaTV_Android/app/src/main/java/br/com/xenatv/app/M3UStreamParser.java <<'XENA_M3U_JAVA'
+          package br.com.xenatv.app;
+
+          import java.io.BufferedInputStream;
+          import java.io.BufferedReader;
+          import java.io.FilterInputStream;
+          import java.io.IOException;
+          import java.io.InputStream;
+          import java.io.InputStreamReader;
+          import java.net.HttpURLConnection;
+          import java.net.URI;
+          import java.net.URL;
+          import java.nio.charset.StandardCharsets;
+          import java.util.ArrayList;
+          import java.util.Locale;
+          import java.util.regex.Matcher;
+          import java.util.regex.Pattern;
+          import java.util.zip.GZIPInputStream;
+
+          /** Importa playlists IPTV sem guardar o arquivo inteiro em RAM. */
+          public final class M3UStreamParser {
+              private M3UStreamParser() {}
+
+              // O limite é de segurança, não um limite de 6 MB: lê o arquivo progressivamente.
+              public static final int MAX_CHANNELS = 60000;
+              private static final long MAX_DECOMPRESSED_BYTES = 192L * 1024L * 1024L;
+              private static final Pattern HTTP = Pattern.compile("^https?://", Pattern.CASE_INSENSITIVE);
+              private static final Pattern SCHEME = Pattern.compile("^(?:https?|rtsp|rtmp)://", Pattern.CASE_INSENSITIVE);
+
+              public static final class Channel {
+                  public final String name;
+                  public final String url;
+                  public final String category;
+                  public final String logo;
+                  Channel(String name, String url, String category) { this(name, url, category, ""); }
+                  Channel(String name, String url, String category, String logo) {
+                      this.name = name;
+                      this.url = url;
+                      this.category = category;
+                      this.logo = logo;
+                  }
+              }
+              public static final class Result {
+                  public final ArrayList<Channel> channels;
+                  public final boolean limited;
+                  public final boolean direct;
+                  Result(ArrayList<Channel> channels, boolean limited, boolean direct) {
+                      this.channels = channels;
+                      this.limited = limited;
+                      this.direct = direct;
+                  }
+              }
+
+              private static Result single(String name, String url) {
+                  ArrayList<Channel> channels = new ArrayList<>();
+                  channels.add(new Channel(name, url, "Transmissão direta"));
+                  return new Result(channels, false, true);
+              }
+
+              public static Result importUrl(String name, String address) throws IOException {
+                  if (!HTTP.matcher(address).find()) return single(name, address); // RTSP/RTMP: abrir pelo VLC
+                  HttpURLConnection conn = null;
+                  try {
+                      conn = (HttpURLConnection) new URL(address).openConnection();
+                      conn.setConnectTimeout(15000);
+                      conn.setReadTimeout(20000);
+                      conn.setInstanceFollowRedirects(true);
+                      conn.setRequestProperty("User-Agent", "XenaTV/1.2 (LibVLC)");
+                      conn.setRequestProperty("Accept-Encoding", "gzip");
+                      conn.setRequestProperty("Accept", "application/x-mpegURL, application/vnd.apple.mpegurl, text/plain, */*");
+                      int code = conn.getResponseCode();
+                      if (code < 200 || code >= 300) {
+                          throw new IOException("Servidor HTTP " + code + ". Confira o endereço ou sua autorização.");
+                      }
+                      String contentType = conn.getContentType();
+                      String mime = contentType == null ? "" : contentType.toLowerCase(Locale.ROOT);
+                      if ((mime.startsWith("video/") || mime.startsWith("audio/"))
+                              && !mime.contains("mpegurl") && !mime.contains("m3u")) {
+                          return single(name, address);
+                      }
+
+                      try (InputStream response = conn.getInputStream()) {
+                          InputStream decoded = response;
+                          String encoding = conn.getContentEncoding();
+                          if (encoding != null && encoding.toLowerCase(Locale.ROOT).contains("gzip")) {
+                              decoded = new GZIPInputStream(response);
+                          }
+                          // A leitura progressiva evita estourar a memória em listas grandes.
+                          try (BufferedInputStream input = new BufferedInputStream(
+                                  new LimitedInputStream(decoded, MAX_DECOMPRESSED_BYTES), 32768)) {
+                              input.mark(8192);
+                              byte[] peek = new byte[4096];
+                              int length = input.read(peek);
+                              input.reset();
+                              if (length < 1) throw new IOException("O servidor retornou uma lista vazia.");
+                              String preview = new String(peek, 0, length, StandardCharsets.UTF_8)
+                                      .replace("\uFEFF", "").trim();
+                              boolean playlist = preview.startsWith("#EXTM3U")
+                                      || preview.startsWith("#EXTINF")
+                                      || preview.startsWith("#EXTGRP")
+                                      || (SCHEME.matcher(preview).find() && preview.contains("\n"));
+                              if (!playlist) {
+                                  if (looksBinary(peek, length)) return single(name, address);
+                                  throw new IOException("O link não retornou uma playlist M3U válida.");
+                              }
+                              BufferedReader reader = new BufferedReader(
+                                      new InputStreamReader(input, StandardCharsets.UTF_8), 32768);
+                              Result parsed = parse(reader, address);
+                              if (parsed.direct) return single(name, address); // #EXT-X- indica mídia HLS
+                              if (parsed.channels.isEmpty()) {
+                                  throw new IOException("Nenhum canal válido foi encontrado na lista M3U.");
+                              }
+                              return parsed;
+                          }
+                      }
+                  } finally {
+                      if (conn != null) conn.disconnect();
+                  }
+              }
+
+              private static boolean looksBinary(byte[] data, int length) {
+                  int control = 0;
+                  for (int i = 0; i < length; i++) {
+                      int b = data[i] & 0xff;
+                      if (b == 0 || (b < 0x20 && b != 9 && b != 10 && b != 13)) control++;
+                  }
+                  return control > 0;
+              }
+
+              /** Package-private para testar listas longas sem abrir uma conexão real. */
+              static Result parse(BufferedReader reader, String base) throws IOException {
+                  ArrayList<Channel> channels = new ArrayList<>();
+                  String pendingName = "", group = "", logo = "";
+                  String line;
+                  while ((line = reader.readLine()) != null) {
+                      line = line.trim();
+                      if (line.startsWith("\uFEFF")) line = line.substring(1);
+                      if (line.isEmpty()) continue;
+                      if (line.regionMatches(true, 0, "#EXT-X-", 0, 7)) {
+                          return new Result(new ArrayList<>(), false, true); // HLS, não um catálogo
+                      }
+                      if (line.regionMatches(true, 0, "#EXTINF", 0, 7)) {
+                          String meta = line.substring(7);
+                          int comma = commaOutsideQuotes(meta);
+                          String attributes = comma < 0 ? meta : meta.substring(0, comma);
+                          pendingName = comma < 0 ? "" : meta.substring(comma + 1).trim();
+                          if (pendingName.isEmpty()) pendingName = attribute(attributes, "tvg-name");
+                          group = attribute(attributes, "group-title");
+                          logo = attribute(attributes, "tvg-logo");
+                      } else if (line.regionMatches(true, 0, "#EXTGRP:", 0, 8)) {
+                          group = line.substring(8).trim();
+                      } else if (!line.startsWith("#")) {
+                          String address = normalizeLink(line, base);
+                          if (address != null) {
+                              String title = pendingName.isEmpty() ? "Canal " + (channels.size() + 1) : pendingName;
+                              channels.add(new Channel(title, address, group, logo));
+                              if (channels.size() >= MAX_CHANNELS) return new Result(channels, true, false);
+                          }
+                          pendingName = "";
+                          group = "";
+                          logo = "";
+                      }
+                  }
+                  return new Result(channels, false, false);
+              }
+
+              private static int commaOutsideQuotes(String value) {
+                  char quote = 0;
+                  for (int i = 0; i < value.length(); i++) {
+                      char c = value.charAt(i);
+                      if (quote == 0 && (c == '\'' || c == '"')) quote = c;
+                      else if (quote == c) quote = 0;
+                      else if (c == ',' && quote == 0) return i;
+                  }
+                  return -1;
+              }
+
+              private static String attribute(String attributes, String key) {
+                  Matcher m = Pattern.compile("(?:^|\\s)" + Pattern.quote(key)
+                          + "\\s*=\\s*([\\\"'])(.*?)\\1", Pattern.CASE_INSENSITIVE).matcher(attributes);
+                  return m.find() ? m.group(2).trim() : "";
+              }
+
+              private static String normalizeLink(String raw, String base) {
+                  try {
+                      URI uri = new URI(raw);
+                      if (!uri.isAbsolute()) uri = new URI(base).resolve(uri);
+                      String scheme = uri.getScheme();
+                      if (scheme == null || uri.getHost() == null || uri.getHost().isEmpty()) return null;
+                      String lowered = scheme.toLowerCase(Locale.ROOT);
+                      if (!lowered.equals("http") && !lowered.equals("https")
+                              && !lowered.equals("rtsp") && !lowered.equals("rtmp")) return null;
+                      return uri.toString();
+                  } catch (Exception ignored) {
+                      return null;
+                  }
+              }
+
+              private static final class LimitedInputStream extends FilterInputStream {
+                  private final long limit;
+                  private long consumed;
+                  LimitedInputStream(InputStream input, long limit) { super(input); this.limit = limit; }
+                  @Override public int read() throws IOException {
+                      int value = super.read();
+                      if (value >= 0 && ++consumed > limit) throw new IOException("Playlist muito extensa.");
+                      return value;
+                  }
+                  @Override public int read(byte[] data, int offset, int count) throws IOException {
+                      int n = in.read(data, offset, count);
+                      if (n > 0 && (consumed += n) > limit) throw new IOException("Playlist muito extensa.");
+                      return n;
+                  }
+              }
+          }
+          XENA_M3U_JAVA
+          python3 - <<'XENA_CONFIG_PY'
+          from pathlib import Path
+          import re
+          root=Path('xena-build/XenaTV_Android')
+          manifest=root/'app/src/main/AndroidManifest.xml'
+          xml=manifest.read_text(encoding='utf-8')
+          if '<activity android:name=".IPTVActivity"' not in xml:
+              tag='<activity android:name=".MainActivity"'
+              assert xml.count(tag)==1, 'MainActivity não localizada no manifesto'
+              xml=xml.replace(tag,'<activity android:name=".IPTVActivity" android:exported="false"/>\n        '+tag)
+          xml=xml.replace('android:usesCleartextTraffic="false"','android:usesCleartextTraffic="true"')
+          manifest.write_text(xml,encoding='utf-8')
+          gradle=root/'app/build.gradle'
+          app=gradle.read_text(encoding='utf-8')
+          app=re.sub(r'compileSdk\s+35', 'compileSdk 36', app)
+          app=re.sub(r'versionCode\s+1\b', 'versionCode 2', app)
+          app=re.sub(r"versionName\s+'[^']+'", "versionName '2.0-ultra'", app)
+          gradle.write_text(app,encoding='utf-8')
+          base=root/'build.gradle'
+          content=base.read_text(encoding='utf-8')
+          content=content.replace("version '8.7.3'", "version '8.10.1'")
+          base.write_text(content,encoding='utf-8')
+          assert 'compileSdk 36' in app and "version '8.10.1'" in content
+          print('Xena TV Ultra: telas, importação M3U, player LibVLC e configurações instaladas.')
+          XENA_CONFIG_PY
+      - name: Compilar aplicativo
+        working-directory: xena-build/XenaTV_Android
+        run: gradle --no-daemon --stacktrace assembleDebug
+      - name: Disponibilizar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: XenaTV-ULTRA-TV-FILMES-SERIES-APK
+          path: xena-build/XenaTV_Android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
