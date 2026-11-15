@@ -1,0 +1,1309 @@
+name: XenaTV 6.9 - Downloads Funcionais Filmes e Series
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/xenatv-69-FILMES-SERIES-DOWNLOAD-FUNCIONAL.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - name: Baixar arquivos do repositorio
+        uses: actions/checkout@v4
+
+      - name: Verificar pacote, limites e arquivos obrigatorios
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f XenaTV_69_PLAYER_CONTROLES_CODIGO_TESTE.zip
+          test -f XenaTV_Android_LibVLC_Teste1.zip
+          test -f patch_filmes_69.py
+          test -f .github/workflows/xenatv-premium-6-9-revisao-cosmica-pipoou-compacta.yml
+          python3 - <<'PY'
+          from pathlib import Path
+          import zipfile
+          own=Path('.github/workflows/xenatv-69-FILMES-SERIES-DOWNLOAD-FUNCIONAL.yml')
+          if not own.exists(): raise RuntimeError('Workflow deve estar em .github/workflows/ e NÃO na raiz do repositório')
+          assert own.stat().st_size < 100_000, 'Workflow muito grande'
+          compact=Path('.github/workflows/xenatv-premium-6-9-revisao-cosmica-pipoou-compacta.yml')
+          assert compact.stat().st_size <= 500_000, 'Base compacta excedeu 500 KB'
+          z=zipfile.ZipFile('XenaTV_69_PLAYER_CONTROLES_CODIGO_TESTE.zip')
+          names=z.namelist()
+          required=['patch_xenatv_69_integrada.py','patch_player_69.py','1000510040.jpg']
+          for item in required:
+              assert names.count(item)==1, f'Arquivo ausente/duplicado: {item}'
+              Path(item).write_bytes(z.read(item))
+          print('Arquivos extraidos, tamanhos conferidos; workflow:',own.stat().st_size,'bytes')
+          PY
+          python3 -m py_compile patch_xenatv_69_integrada.py patch_player_69.py patch_filmes_69.py
+
+      - name: Instalar Java e Android SDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+      - name: Instalar plataforma Android
+        run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Restaurar base 6.9 e preservar correcao de filmes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64,lzma,pathlib,re
+          p=pathlib.Path('.github/workflows/xenatv-premium-6-9-revisao-cosmica-pipoou-compacta.yml')
+          s=p.read_text(encoding='utf-8')
+          m=re.search(r'payload = """\s*(.*?)\s*"""',s,re.S)
+          if not m: raise RuntimeError('Base compacta sem payload')
+          pathlib.Path('xena-build-step.sh').write_bytes(lzma.decompress(base64.b85decode(''.join(m.group(1).split()))))
+          PY
+          python3 patch_filmes_69.py
+          # Corrige importacao/classificacao de filmes SEM modificar a logica de series.
+          base64 -d > patch_filmes_plataformas_automatico_69.py <<'XENA_FILMES_AUTOMATICO_PATCH'
+          IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwoiIiJDb3JyZcOnw6NvIGluY3JlbWVudGFsOiBWT0QgWHRy
+          ZWFtIHNlcGFyYWRvIGRhIFRWIGUgZGFzIHPDqXJpZXMuCkFwbGljYSBubyB4ZW5hLWJ1aWxkLXN0
+          ZXAuc2ggQVDDk1MgcGF0Y2hfZmlsbWVzXzY5LnB5IGUgQU5URVMgZG8gYmFzaC4KTsOjbyByZWVz
+          Y3JldmUgc8OpcmllLCBuw6NvIHJlbW92ZSBUViwgbsOjbyBsw6ogY3JlZGVuY2lhaXMgZm9yYSBk
+          byBhcGFyZWxoby4KIiIiCmZyb20gcGF0aGxpYiBpbXBvcnQgUGF0aApwID0gUGF0aCgneGVuYS1i
+          dWlsZC1zdGVwLnNoJykKcyA9IHAucmVhZF90ZXh0KGVuY29kaW5nPSd1dGYtOCcpCgpkZWYgaW5q
+          ZWN0KGFuY2hvcjogc3RyLCBhZGRpdGlvbjogc3RyLCBsYWJlbDogc3RyKToKICAgIGdsb2JhbCBz
+          CiAgICBuPXMuY291bnQoYW5jaG9yKQogICAgaWYgbiE9MTogcmFpc2UgUnVudGltZUVycm9yKGYn
+          e2xhYmVsfTogZXNwZXJhZG8gZXhhdGFtZW50ZSAxIHBvbnRvLCBlbmNvbnRyYWRvIHtufScpCiAg
+          ICBzPXMucmVwbGFjZShhbmNob3IsYWRkaXRpb24rYW5jaG9yLDEpCgpkZWYgcmVwKG9sZDogc3Ry
+          LG5ldzogc3RyLGxhYmVsOiBzdHIpOgogICAgZ2xvYmFsIHMKICAgIG49cy5jb3VudChvbGQpCiAg
+          ICBpZiBuIT0xOiByYWlzZSBSdW50aW1lRXJyb3IoZid7bGFiZWx9OiB0cmVjaG8gb3JpZ2luYWwg
+          bXVkb3UgKHtufSBvY29ycsOqbmNpYXMpJykKICAgIHM9cy5yZXBsYWNlKG9sZCxuZXcsMSkKCiMg
+          MSkgWHRyZWFtOiBjb25zdWx0YXIgZ2V0X3ZvZF9zdHJlYW1zIG1lc21vIHF1YW5kbyBhIGxpc3Rh
+          IE0zVSBkZSBUViBqw6EgcmV0b3Jub3UgZGFkb3MuCiMgQXMgY2F0ZWdvcmlhcyBzw6NvIGRldm9s
+          dmlkYXMgcGVsbyBmb3JuZWNlZG9yOiBuw6NvIGludmVudGFyIGFzc29jaWHDp8OjbyBOZXRmbGl4
+          L1ByaW1lL2V0Yy4KbWV0aG9kID0gcicnJyAgICAvKiogSW1wb3J0YcOnw6NvIEVYQ0xVU0lWQSBk
+          ZSBmaWxtZXMgZGEgZm9udGUgWHRyZWFtOyBUVi9zw6lyaWVzIGludG9jYWRhcy4gKi8KICAgIHB1
+          YmxpYyBzdGF0aWMgQXJyYXlMaXN0PE0zVVN0cmVhbVBhcnNlci5DaGFubmVsPiBtb3ZpZXNPbmx5
+          KFN0cmluZyBzb3VyY2UpIHRocm93cyBJT0V4Y2VwdGlvbiB7CiAgICAgICAgQWNjb3VudCBhPWFj
+          Y291bnQoc291cmNlKTsKICAgICAgICBNYXA8U3RyaW5nLFN0cmluZz4gY2F0ZWdvcmllcz1jYXRl
+          Z29yaWVzKGEsImdldF92b2RfY2F0ZWdvcmllcyIpOwogICAgICAgIEpTT05BcnJheSBtb3ZpZXM9
+          YXJyYXkoYSwiZ2V0X3ZvZF9zdHJlYW1zIik7CiAgICAgICAgU3RyaW5nIHVzZXI9VVJMRW5jb2Rl
+          ci5lbmNvZGUoYS51c2VyLCJVVEYtOCIpLHBhc3M9VVJMRW5jb2Rlci5lbmNvZGUoYS5wYXNzd29y
+          ZCwiVVRGLTgiKTsKICAgICAgICBBcnJheUxpc3Q8TTNVU3RyZWFtUGFyc2VyLkNoYW5uZWw+IG91
+          dD1uZXcgQXJyYXlMaXN0PD4oKTsKICAgICAgICBmb3IoaW50IGk9MDtpPG1vdmllcy5sZW5ndGgo
+          KSYmb3V0LnNpemUoKTxNM1VTdHJlYW1QYXJzZXIuTUFYX0NIQU5ORUxTO2krKyl7CiAgICAgICAg
+          ICAgIEpTT05PYmplY3QgbT1tb3ZpZXMub3B0SlNPTk9iamVjdChpKTtpZihtPT1udWxsKWNvbnRp
+          bnVlOwogICAgICAgICAgICBTdHJpbmcgaWQ9bS5vcHRTdHJpbmcoInN0cmVhbV9pZCIsIiIpOwog
+          ICAgICAgICAgICBpZighaWQubWF0Y2hlcygiWzAtOV0rIikpY29udGludWU7CiAgICAgICAgICAg
+          IFN0cmluZyBleHRlbnNpb249c2FmZUV4dChtLm9wdFN0cmluZygiY29udGFpbmVyX2V4dGVuc2lv
+          biIsIm1wNCIpKTsKICAgICAgICAgICAgU3RyaW5nIG5hbWU9bS5vcHRTdHJpbmcoIm5hbWUiLCJG
+          aWxtZSAiK2lkKTsKICAgICAgICAgICAgU3RyaW5nIGdyb3VwPSJGaWxtZXMg4oCiICIrY2F0ZWdv
+          cmllcy5nZXRPckRlZmF1bHQobS5vcHRTdHJpbmcoImNhdGVnb3J5X2lkIiwiIiksIlNlbSBjYXRl
+          Z29yaWEiKTsKICAgICAgICAgICAgU3RyaW5nIGNvdmVyPW0ub3B0U3RyaW5nKCJzdHJlYW1faWNv
+          biIsIiIpOwogICAgICAgICAgICBTdHJpbmcgdXJsPWEuYmFzZSsibW92aWUvIit1c2VyKyIvIitw
+          YXNzKyIvIitpZCsiLiIrZXh0ZW5zaW9uOwogICAgICAgICAgICBvdXQuYWRkKG5ldyBNM1VTdHJl
+          YW1QYXJzZXIuQ2hhbm5lbChuYW1lLHVybCxncm91cCxjb3ZlcikpOwogICAgICAgIH0KICAgICAg
+          ICByZXR1cm4gb3V0OwogICAgfQonJycKaW5qZWN0KCcgICAgLyoqIENvbnN1bHRhIGFwZW5hcyBz
+          w6lyaWVzLiBOw6NvIGRlcGVuZGUgZGUgaW1wb3J0YXIgbmVtIHNvYnJlc2NyZXZlIG9zIGNhbmFp
+          cyBhbyB2aXZvLiAqLycsbWV0aG9kLCdYdHJlYW1DYXRhbG9nLm1vdmllc09ubHknKQoKIyAyKSBT
+          UUxpdGU6IHVwc2VydCBwb3IgVVJMIGRlIHbDrWRlbywgcHJlc2VydmFuZG8gdG9kb3Mgb3MgcmVn
+          aXN0cm9zIGRlIHPDqXJpZXMgZSBUVi4KbWV0aG9kID0gcicnJyAgICAvKiogSW1wb3J0YS9hdHVh
+          bGl6YSBBUEVOQVMgZmlsbWVzIFh0cmVhbSwgc2VtIHN1YnN0aXR1aXIgVFYvc8Opcmllcy9mYXZv
+          cml0b3MuICovCiAgICBwdWJsaWMgaW50IG1lcmdlTW92aWVzKExpc3Q8TTNVU3RyZWFtUGFyc2Vy
+          LkNoYW5uZWw+IGZpbG1zKXsKICAgICAgICBTUUxpdGVEYXRhYmFzZSBkYj1nZXRXcml0YWJsZURh
+          dGFiYXNlKCk7CiAgICAgICAgZGIuYmVnaW5UcmFuc2FjdGlvbigpOwogICAgICAgIGludCBjb3Vu
+          dD0wOwogICAgICAgIHRyeXsKICAgICAgICAgICAgZGIuZXhlY1NRTCgiQ1JFQVRFIElOREVYIElG
+          IE5PVCBFWElTVFMgaWR4X3hlbmFfbW92aWVfYWRkcmVzcyBPTiBjaGFubmVscyhhZGRyZXNzKSIp
+          OwogICAgICAgICAgICBhbmRyb2lkLmNvbnRlbnQuQ29udGVudFZhbHVlcyByb3c9bmV3IGFuZHJv
+          aWQuY29udGVudC5Db250ZW50VmFsdWVzKCk7CiAgICAgICAgICAgIGZvcihNM1VTdHJlYW1QYXJz
+          ZXIuQ2hhbm5lbCBjOmZpbG1zKXsKICAgICAgICAgICAgICAgIGlmKGMudXJsPT1udWxsfHwhYy51
+          cmwuY29udGFpbnMoIi9tb3ZpZS8iKSljb250aW51ZTsKICAgICAgICAgICAgICAgIHJvdy5jbGVh
+          cigpOwogICAgICAgICAgICAgICAgcm93LnB1dCgidGl0bGUiLGMubmFtZT09bnVsbD8iRmlsbWUi
+          OmMubmFtZSk7CiAgICAgICAgICAgICAgICByb3cucHV0KCJhZGRyZXNzIixjLnVybCk7CiAgICAg
+          ICAgICAgICAgICByb3cucHV0KCJjYXRlZ29yeSIsYy5jYXRlZ29yeT09bnVsbD8iRmlsbWVzIOKA
+          oiBTZW0gY2F0ZWdvcmlhIjpjLmNhdGVnb3J5KTsKICAgICAgICAgICAgICAgIHJvdy5wdXQoImxv
+          Z28iLGMubG9nbz09bnVsbD8iIjpjLmxvZ28pOwogICAgICAgICAgICAgICAgcm93LnB1dCgia2lu
+          ZCIsIkZpbG1lcyIpOwogICAgICAgICAgICAgICAgaW50IGNoYW5nZWQ9ZGIudXBkYXRlKCJjaGFu
+          bmVscyIscm93LCJhZGRyZXNzPT8gQU5EIGtpbmQ8PidTw6lyaWVzJyIsbmV3IFN0cmluZ1tde2Mu
+          dXJsfSk7CiAgICAgICAgICAgICAgICBpZihjaGFuZ2VkPT0wKXsKICAgICAgICAgICAgICAgICAg
+          ICAvLyBBIGZvbnRlIFh0cmVhbSBmb3JuZWNlIElEcyBWT0Q7IHVtYSBVUkwgZGUgc8OpcmllIG51
+          bmNhIMOpIHJldXRpbGl6YWRhLgogICAgICAgICAgICAgICAgICAgIGlmKGRiLmluc2VydCgiY2hh
+          bm5lbHMiLG51bGwscm93KTwwKXRocm93IG5ldyBhbmRyb2lkLmRhdGFiYXNlLlNRTEV4Y2VwdGlv
+          bigiRmFsaGEgYW8gZ3JhdmFyIGZpbG1lIik7CiAgICAgICAgICAgICAgICB9CiAgICAgICAgICAg
+          ICAgICBjb3VudCsrOwogICAgICAgICAgICB9CiAgICAgICAgICAgIGRiLnNldFRyYW5zYWN0aW9u
+          U3VjY2Vzc2Z1bCgpOwogICAgICAgIH1maW5hbGx5e2RiLmVuZFRyYW5zYWN0aW9uKCk7fQogICAg
+          ICAgIHJldHVybiBjb3VudDsKICAgIH0KJycnCmluamVjdCgnICAgIC8qKiBBbHRlcmEgYXBlbmFz
+          IGFsdGVybmF0aXZhcyBkYSBtZXNtYSBmb250ZS4gU2VtIHNlbmhhcyBwdWJsaWNhZGFzIG5vIHBy
+          b2pldG8uICovJyxtZXRob2QsJ0NoYW5uZWxTdG9yZS5tZXJnZU1vdmllcycpCgojIDMpIEludGVy
+          ZmFjZTogYm90w6NvIGV4cGzDrWNpdG8gcGFyYSByZWZhemVyIHN5bmMgZSBmbHV4byBhdXRvbcOh
+          dGljbyB1bWEgdmV6IHBvciBkaWEuCm9sZCA9ICcnJyAgICAgICAgaWYoTU9WSUVTLmVxdWFscyhr
+          aW5kKSl7CiAgICAgICAgICAgIEJ1dHRvbiBsaW5rPWJ1dHRvbigi4pqZICBBc3NvY2lhciBjYXRl
+          Z29yaWFzIGRlIGZpbG1lcyBkYXMgbWluaGFzIGxpc3RhcyIsZmFsc2UpOycnJwpuZXcgPSAnJycg
+          ICAgICAgIGlmKE1PVklFUy5lcXVhbHMoa2luZCkpewogICAgICAgICAgICBCdXR0b24gdXBkYXRl
+          PWJ1dHRvbigi4oa7IFNpbmNyb25pemFyIGZpbG1lcyBkYXMgbWluaGFzIGxpc3RhcyIsZmFsc2Up
+          OwogICAgICAgICAgICBib2R5LmFkZFZpZXcodXBkYXRlLGxwKC0xLDQ4KSk7Z2FwKGJvZHksOCk7
+          CiAgICAgICAgICAgIHVwZGF0ZS5zZXRPbkNsaWNrTGlzdGVuZXIodi0+ewogICAgICAgICAgICAg
+          ICAgLy8gU29tZW50ZSBvIGNhY2hlIGRhIHNpbmNyb25pemHDp8OjbyBkZSBGSUxNRVMgw6kgaW52
+          YWxpZGFkby4KICAgICAgICAgICAgICAgIGdldFNoYXJlZFByZWZlcmVuY2VzKCJ4ZW5hX3ZvZF9z
+          eW5jX3YyIixNT0RFX1BSSVZBVEUpLmVkaXQoKS5jbGVhcigpLmFwcGx5KCk7CiAgICAgICAgICAg
+          ICAgICArK3BsYXRmb3JtUmV2aXNpb247cmVuZGVyQm9keSgpOwogICAgICAgICAgICB9KTsKICAg
+          ICAgICAgICAgQnV0dG9uIGxpbms9YnV0dG9uKCLimpkgIEFzc29jaWFyIGNhdGVnb3JpYXMgZGUg
+          ZmlsbWVzIGRhcyBtaW5oYXMgbGlzdGFzIixmYWxzZSk7JycnCnJlcChvbGQsbmV3LCdCb3TDo28g
+          c2luY3Jvbml6YXIgZmlsbWVzJykKCiMgSW5qZXRhciBkZW50cm8gZG8gd29ya2VyIGRlIHBsYXRh
+          Zm9ybWEsIG7Do28gbmEgaW1wb3J0YcOnw6NvIHByaW5jaXBhbC4gQXNzaW0gbWVzbW8KIyBxdWVt
+          IGrDoSBpbXBvcnRvdSBNM1UgZSB0ZW0gMjEwIHPDqXJpZXMgYWdvcmEgcmVjdXBlcmEgc2V1cyBm
+          aWxtZXMgYXV0b21hdGljYW1lbnRlLgpvbGQgPSAnJycgICAgICAgICAgICAgICAgc291cmNlcysr
+          OwogICAgICAgICAgICAgICAgQ2hhbm5lbFN0b3JlIGRiPW51bGw7CiAgICAgICAgICAgICAgICB0
+          cnl7CiAgICAgICAgICAgICAgICAgICAgZGI9bmV3IENoYW5uZWxTdG9yZSh0aGlzLHNyYy5pZCk7
+          CiAgICAgICAgICAgICAgICAgICAgLy8gQ2F0ZWdvcmlhcyByZWFpcyBkYSBJUFRWICsgdmluY3Vs
+          b3MgbG9jYWlzIGVzY29saGlkb3MgcGVsbyB1c3XDoXJpby4nJycKbmV3ID0gJycnICAgICAgICAg
+          ICAgICAgIHNvdXJjZXMrKzsKICAgICAgICAgICAgICAgIENoYW5uZWxTdG9yZSBkYj1udWxsOwog
+          ICAgICAgICAgICAgICAgdHJ5ewogICAgICAgICAgICAgICAgICAgIGRiPW5ldyBDaGFubmVsU3Rv
+          cmUodGhpcyxzcmMuaWQpOwogICAgICAgICAgICAgICAgICAgIGlmKE1PVklFUy5lcXVhbHMoa2lu
+          ZCkmJlh0cmVhbUNhdGFsb2cuc3VwcG9ydHMoc3JjLnVybCkpewogICAgICAgICAgICAgICAgICAg
+          ICAgICBhbmRyb2lkLmNvbnRlbnQuU2hhcmVkUHJlZmVyZW5jZXMgc3luY1ByZWZzPWdldFNoYXJl
+          ZFByZWZlcmVuY2VzKCJ4ZW5hX3ZvZF9zeW5jX3YyIixNT0RFX1BSSVZBVEUpOwogICAgICAgICAg
+          ICAgICAgICAgICAgICBsb25nIGxhc3Q9c3luY1ByZWZzLmdldExvbmcoc3JjLmlkLDBMKTsKICAg
+          ICAgICAgICAgICAgICAgICAgICAgaWYoKGxhc3Q9PTBMfHxTeXN0ZW0uY3VycmVudFRpbWVNaWxs
+          aXMoKS1sYXN0PjEyTCo2MCo2MCoxMDAwKQogICAgICAgICAgICAgICAgICAgICAgICAgICAgJiYg
+          U3lzdGVtLmN1cnJlbnRUaW1lTWlsbGlzKCk+PXN5bmNQcmVmcy5nZXRMb25nKHNyYy5pZCsiX3Jl
+          dHJ5IiwwTCkpewogICAgICAgICAgICAgICAgICAgICAgICAgICAgdHJ5ewogICAgICAgICAgICAg
+          ICAgICAgICAgICAgICAgICAgIC8vIEZvbnRlIGFjZXNzYWRhIHPDsyBubyBhcGFyZWxoby4gQSBB
+          UEkgZmFsaGFyIG7Do28gYXBhZ2EgbyBjYXTDoWxvZ28uCiAgICAgICAgICAgICAgICAgICAgICAg
+          ICAgICAgICAgQXJyYXlMaXN0PE0zVVN0cmVhbVBhcnNlci5DaGFubmVsPiBmcmVzaD1YdHJlYW1D
+          YXRhbG9nLm1vdmllc09ubHkoc3JjLnVybCk7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAg
+          ICAgaWYoIWZyZXNoLmlzRW1wdHkoKSlkYi5tZXJnZU1vdmllcyhmcmVzaCk7CiAgICAgICAgICAg
+          ICAgICAgICAgICAgICAgICAgICAgc3luY1ByZWZzLmVkaXQoKS5wdXRMb25nKHNyYy5pZCxTeXN0
+          ZW0uY3VycmVudFRpbWVNaWxsaXMoKSkucmVtb3ZlKHNyYy5pZCsiX3JldHJ5IikuYXBwbHkoKTsK
+          ICAgICAgICAgICAgICAgICAgICAgICAgICAgIH1jYXRjaChFeGNlcHRpb24gZXgpewogICAgICAg
+          ICAgICAgICAgICAgICAgICAgICAgICAgIHN5bmNQcmVmcy5lZGl0KCkucHV0TG9uZyhzcmMuaWQr
+          Il9yZXRyeSIsU3lzdGVtLmN1cnJlbnRUaW1lTWlsbGlzKCkrMTBMKjYwKjEwMDApLmFwcGx5KCk7
+          CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgYW5kcm9pZC51dGlsLkxvZy53KCJYZW5h
+          TW92aWVzIiwgIkFQSSBWT0QgaW5kaXNwb27DrXZlbCBwYXJhIGVzdGEgZm9udGU6ICIrZXguZ2V0
+          Q2xhc3MoKS5nZXRTaW1wbGVOYW1lKCkpOwogICAgICAgICAgICAgICAgICAgICAgICAgICAgfQog
+          ICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAg
+          ICAgICAgICAgIC8vIENhdGVnb3JpYXMgcmVhaXMgZGEgSVBUViArIHZpbmN1bG9zIGxvY2FpcyBl
+          c2NvbGhpZG9zIHBlbG8gdXN1w6FyaW8uJycnCnJlcChvbGQsbmV3LCdTeW5jIGF1dG9tw6F0aWNv
+          IHBvciBmb250ZSBhbnRlcyBkbyBjYXTDoWxvZ28nKQoKIyBOw6NvIGNhcnJlZ2FyIG1pbGhhcmVz
+          IGRlIG9iamV0b3Mgc2ltdWx0YW5lYW1lbnRlOiBqw6EgZXhpc3RlICJNb3N0cmFyIG1haXMgdMOt
+          dHVsb3MiLgojIExpbWl0ZSBhbnRpZ28gZGUgMjEwIHBvciBncnVwbyBzZSBtYW50w6ltIGFwZW5h
+          cyBwYXJhIHPDqXJpZXMsIGludG9jYWRhcyBwZWxvIHBhdGNoLgpyZXAoJ2ludCBjYXA9TWF0aC5t
+          aW4oZ3JvdXAuY291bnQsMjEwKTsnLAogICAgJ2ludCBjYXA9TU9WSUVTLmVxdWFscyhraW5kKT9N
+          YXRoLm1pbihncm91cC5jb3VudCwzMDAwKTpNYXRoLm1pbihncm91cC5jb3VudCwyMTApOycsCiAg
+          ICAnUGFnaW5hw6fDo28gZG8gY2F0w6Fsb2dvIGRlIGZpbG1lcycpCnJlcCgnJycgICAgICAgICAg
+          ICAgICAgICAgICAgICBpZihyZXN1bHQuc2l6ZSgpPjgwMClicmVhazsKICAgICAgICAgICAgICAg
+          ICAgICB9CiAgICAgICAgICAgICAgICB9Y2F0Y2goRXhjZXB0aW9uIGlnbm9yZWQpJycnLCAnJycg
+          ICAgICAgICAgICAgICAgICAgICAgICBpZihyZXN1bHQuc2l6ZSgpPihNT1ZJRVMuZXF1YWxzKGtp
+          bmQpPzEyMDAwOjgwMCkpYnJlYWs7CiAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAg
+          ICAgfWNhdGNoKEV4Y2VwdGlvbiBpZ25vcmVkKScnJywgJ0xpbWl0ZSBkZSByZXN1bHRhZG9zIG5h
+          IGNhdGVnb3JpYScpCnJlcCgnJycgICAgICAgICAgICAgICAgaWYocmVzdWx0LnNpemUoKT44MDAp
+          YnJlYWs7CiAgICAgICAgICAgIH0KICAgICAgICAgICAgZmluYWwgaW50IGNvdW50U291cmNlcycn
+          JywKICAgICcnJyAgICAgICAgICAgICAgICBpZihyZXN1bHQuc2l6ZSgpPihNT1ZJRVMuZXF1YWxz
+          KGtpbmQpPzEyMDAwOjgwMCkpYnJlYWs7CiAgICAgICAgICAgIH0KICAgICAgICAgICAgZmluYWwg
+          aW50IGNvdW50U291cmNlcycnJywKICAgICdMaW1pdGUgZ2xvYmFsIGRlIHJlc3VsdGFkb3MnKQoK
+          IyA0KSBVbWEgY2F0ZWdvcmlhIGV4cGxpY2l0YW1lbnRlIG5vbWVhZGEgcG9yIG91dHJhIHBsYXRh
+          Zm9ybWEgbnVuY2EgcG9kZSB2YXphcgojIHBhcmEgYSBww6FnaW5hIGVycmFkYSBkZXZpZG8gYSB1
+          bSB2w61uY3VsbyBtYW51YWwgYW50aWdvLgpyZXAoJ3JldHVybiBQbGF0Zm9ybVNob3J0Y3V0UnVs
+          ZXMubWF0Y2hlcyhwbGF0Zm9ybSxjYXRlZ29yeSlcbiAgICAgICAgICAgIHx8KGxpbmtlZCE9bnVs
+          bCYmbGlua2VkLmNvbnRhaW5zKGtleShzb3VyY2VJZCxjYXRlZ29yeSkpKTsnLCdTdHJpbmcgZGV0
+          ZWN0ZWQ9Q2F0ZWdvcnlJY29uUnVsZXMuYnJhbmQoY2F0ZWdvcnkpO1xuICAgICAgICBpZihkZXRl
+          Y3RlZCE9bnVsbCYmIWRldGVjdGVkLmlzRW1wdHkoKSlyZXR1cm4gUGxhdGZvcm1TaG9ydGN1dFJ1
+          bGVzLm1hdGNoZXMocGxhdGZvcm0sY2F0ZWdvcnkpO1xuICAgICAgICByZXR1cm4gbGlua2VkIT1u
+          dWxsJiZsaW5rZWQuY29udGFpbnMoa2V5KHNvdXJjZUlkLGNhdGVnb3J5KSk7JywnVmFsaWRhw6fD
+          o28gZGUgcGxhdGFmb3JtYSBub21lYWRhJykKCiMgQ2F0ZWdvcmlhcyBkZSBvdXRyYSBwbGF0YWZv
+          cm1hIG7Do28gYXBhcmVjZW0gY29tbyBvcMOnw6NvIHBhcmEgYXNzb2NpYcOnw6NvIGluY29ycmV0
+          YS4KcmVwKCdpZihQbGF0Zm9ybVNob3J0Y3V0UnVsZXMubWF0Y2hlcyhicmFuZCxncm91cC50aXRs
+          ZSkpY29udGludWU7XG4gICAgICAgICAgICAgICAgICAgICAgICBrZXlzLmFkZCcsJ2lmKCFDYXRl
+          Z29yeUljb25SdWxlcy5icmFuZChncm91cC50aXRsZSkuaXNFbXB0eSgpKWNvbnRpbnVlO1xuICAg
+          ICAgICAgICAgICAgICAgICAgICAga2V5cy5hZGQnLCdOw6NvIG1pc3R1cmFyIGNhdGVnb3JpYXMg
+          ZGUgcGxhdGFmb3JtYXMnKQoKIyA0KSBBIHNpbmNyb25pemHDp8OjbyBtYW51YWwgZGV2ZSBsaXN0
+          YXIgdGFtYsOpbSBncnVwb3MgYW50ZXMgY2xhc3NpZmljYWRvcyBjb21vIFRWIGNvbSBWT0QuCnJl
+          cCgnZm9yKENoYW5uZWxTdG9yZS5Hcm91cCBncm91cDpkYi5hbGxDYXRlZ29yaWVzKE1PVklFUykp
+          eycsCiAgICAnZm9yKENoYW5uZWxTdG9yZS5Hcm91cCBncm91cDpkYi5hbGxNb3ZpZUNhdGVnb3Jp
+          ZXMoKSl7JywKICAgICdBc3NvY2lhw6fDo28gbWFudWFsIGRlIGZpbG1lcycpCgphc3NlcnQgJ2Ri
+          LmFsbE1vdmllQ2F0ZWdvcmllcygpJyBpbiBzICAjIGNyaWFkbyBwZWxvIHBhdGNoX2ZpbG1lc182
+          OS5weQpwLndyaXRlX3RleHQocyxlbmNvZGluZz0ndXRmLTgnKQpwcmludCgnT0s6IFZPRCBzZXBh
+          cmFkbyBkZSBNM1UgZSBzw6lyaWVzOyBzaW5jcm9uaXphw6fDo28gYXV0b23DoXRpY2EvbWFudWFs
+          OyBtYXBlYW1lbnRvIGZpZWwgw6BzIGNhdGVnb3JpYXMgSVBUVi4nKQo=
+          XENA_FILMES_AUTOMATICO_PATCH
+          python3 -m py_compile patch_filmes_plataformas_automatico_69.py
+          python3 patch_filmes_plataformas_automatico_69.py
+          bash xena-build-step.sh
+
+      - name: Integrar icones, tela dupla e controles de video
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet Pillow
+          python3 patch_xenatv_69_integrada.py
+          python3 patch_player_69.py
+          python3 - <<'PY'
+          from pathlib import Path
+          base=Path('xena-premium/XenaTV_Android/app/src/main')
+          player=(base/'java/br/com/xenatv/app/FullScreenPlayerActivity.java').read_text()
+          main=(base/'java/br/com/xenatv/app/MainActivity.java').read_text()
+          for key in ('buildPlayerBar()', 'skipSeconds(-10)', 'skipSeconds(10)', 'playSecond(', 'setAudible('):
+              assert key in player, f'Funcao ausente: {key}'
+          assert 'xenaNavImage(' in main, 'Icones nao aplicados'
+          assert len(list((base/'res/drawable-nodpi').glob('xena_nav_*.png'))) == 9
+          print('INTEGRACAO VALIDADA: controles, tela dupla, 9 icones e filmes anteriores')
+          PY
+
+      - name: Corrigir toque e áudio das duas telas
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_audio_corrigido.py <<'XENA_AUDIO_PATCH'
+          #!/usr/bin/env python3
+          """XenaTV 6.9: selecionar áudio tocando em cada vídeo da Tela Dividida.
+          Aplicar após patch_xenatv_69_integrada.py e patch_player_69.py.
+          """
+          from pathlib import Path
+          p=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java')
+          s=p.read_text(encoding='utf-8')
+          def once(old,new,label):
+              global s
+              n=s.count(old)
+              if n!=1: raise RuntimeError(f'{label}: esperado 1 trecho, encontrados {n}')
+              s=s.replace(old,new,1)
+          
+          once('    private int audiblePane=1;', '''    private int audiblePane=1;
+              private Button audioChoiceButton;
+              private TextView leftAudioBadge,rightAudioBadge;
+              private View leftTouchArea,rightTouchArea;''','campos')
+          once('''        firstPane.setOnClickListener(v->setAudible(1));
+                  secondPane.setOnClickListener(v->setAudible(2));''','''        // Superfícies VLC podem consumir toques; camadas transparentes ficam por cima delas.
+                  leftTouchArea=new View(this);leftTouchArea.setClickable(true);
+                  rightTouchArea=new View(this);rightTouchArea.setClickable(true);
+                  leftTouchArea.setOnClickListener(v->selectAudioPane(1));
+                  rightTouchArea.setOnClickListener(v->selectAudioPane(2));
+                  secondPane.addView(rightTouchArea,new FrameLayout.LayoutParams(-1,-1));
+                  leftAudioBadge=text("♫ ESQUERDA",11,WHITE,true);
+                  rightAudioBadge=text("DIREITA · MUDO",11,WHITE,true);
+                  leftAudioBadge.setPadding(dp(10),dp(5),dp(10),dp(5));
+                  rightAudioBadge.setPadding(dp(10),dp(5),dp(10),dp(5));
+                  FrameLayout.LayoutParams rb=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.RIGHT);
+                  rb.topMargin=dp(72);rb.rightMargin=dp(10);
+                  secondPane.addView(rightAudioBadge,rb);''','áreas de toque')
+          once('''        Button audio=button("♫ 1");audio.setOnClickListener(v->{
+                      setAudible(audiblePane==1?2:1);audio.setText("♫ "+audiblePane);
+                  });''','''        Button audio=button("♫ 1");audioChoiceButton=audio;
+                  audio.setOnClickListener(v->selectAudioPane(audiblePane==1?2:1));''','botão superior')
+          once('''        firstPane.addView(videoSurface,new FrameLayout.LayoutParams(-1,-1));
+                  splitHolder.setVisibility(View.VISIBLE);''','''        firstPane.addView(videoSurface,new FrameLayout.LayoutParams(-1,-1));
+                  // A camada fica por cima do vídeo e captura o toque em toda a metade esquerda.
+                  if(leftTouchArea.getParent() instanceof android.view.ViewGroup)
+                      ((android.view.ViewGroup)leftTouchArea.getParent()).removeView(leftTouchArea);
+                  firstPane.addView(leftTouchArea,new FrameLayout.LayoutParams(-1,-1));
+                  FrameLayout.LayoutParams lb=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.LEFT);
+                  lb.topMargin=dp(72);lb.leftMargin=dp(10);
+                  if(leftAudioBadge.getParent() instanceof android.view.ViewGroup)
+                      ((android.view.ViewGroup)leftAudioBadge.getParent()).removeView(leftAudioBadge);
+                  firstPane.addView(leftAudioBadge,lb);
+                  splitHolder.setVisibility(View.VISIBLE);''','camada esquerda')
+          once('''    private void setAudible(int which){
+                  audiblePane=which;
+                  applyVolume();
+              }''','''    private void selectAudioPane(int which){
+                  if(!splitEnabled)return;
+                  setAudible(which);
+                  showChrome();
+              }
+              private void setAudible(int which){
+                  audiblePane=(which==2?2:1);
+                  applyVolume(); // Obedece ao volume configurado e muta sempre a outra tela.
+                  if(audioChoiceButton!=null)audioChoiceButton.setText("♫ "+audiblePane);
+                  if(leftAudioBadge!=null){
+                      leftAudioBadge.setText(audiblePane==1?"♫ ESQUERDA · ÁUDIO":"ESQUERDA · MUDO");
+                      leftAudioBadge.setBackground(shape(audiblePane==1?0xd20c554e:0xb5222050,12));
+                  }
+                  if(rightAudioBadge!=null){
+                      rightAudioBadge.setText(audiblePane==2?"♫ DIREITA · ÁUDIO":"DIREITA · MUDO");
+                      rightAudioBadge.setBackground(shape(audiblePane==2?0xd20c554e:0xb5222050,12));
+                  }
+              }''','seleção áudio')
+          once('''        selectingSecond=false;splitEnabled=false;stopSecond();secondChannel=null;''','''        selectingSecond=false;splitEnabled=false;stopSecond();secondChannel=null;
+                  if(leftAudioBadge!=null&&leftAudioBadge.getParent()==firstPane)firstPane.removeView(leftAudioBadge);
+                  if(leftTouchArea!=null&&leftTouchArea.getParent()==firstPane)firstPane.removeView(leftTouchArea);''','limpeza esquerda')
+          p.write_text(s,encoding='utf-8')
+          assert all(k in s for k in ('leftTouchArea.setOnClickListener(v->selectAudioPane(1))', 'rightTouchArea.setOnClickListener(v->selectAudioPane(2))','audioChoiceButton.setText("♫ "+audiblePane)','applyVolume(); // Obedece'))
+          print('OK: toque em cada metade troca áudio, mostra seleção e mantém volume de um player apenas.')
+          XENA_AUDIO_PATCH
+          python3 -m py_compile patch_audio_corrigido.py
+          python3 patch_audio_corrigido.py
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          src=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java').read_text()
+          required=(
+             'leftTouchArea.setOnClickListener(v->selectAudioPane(1))',
+             'rightTouchArea.setOnClickListener(v->selectAudioPane(2))',
+             'firstPane.addView(leftTouchArea',
+             'secondPane.addView(rightTouchArea',
+             'audioChoiceButton.setText("♫ "+audiblePane)',
+             'applyVolume(); // Obedece',
+          )
+          for key in required: assert key in src, 'Faltou recurso: '+key
+          print('TOQUE DE AUDIO: implementação presente e verificada nos arquivos Java.')
+          PYVERIFY
+
+      - name: Aplicar audio por toque, brilho e volume por gestos
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_gestos.py <<'XENA_GESTOS_PATCH'
+          #!/usr/bin/env python3
+          """XenaTV 6.9 – um toque escolhe áudio; deslizar ajusta brilho/volume.
+          Aplicar após patch_xenatv_69_integrada.py, patch_player_69.py e patch_audio_toque_CORRIGIDO_69.py.
+          """
+          from pathlib import Path
+          p=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java')
+          s=p.read_text(encoding='utf-8')
+          def once(old,new,label):
+              global s
+              n=s.count(old)
+              if n!=1: raise RuntimeError(f'{label}: esperado 1 ocorrência, encontrado {n}')
+              s=s.replace(old,new,1)
+          
+          # Elimina as etiquetas que atualmente poluem as duas transmissões.
+          once('        secondPane.addView(rightAudioBadge,rb);',
+               '        rightAudioBadge.setVisibility(View.GONE); // Etiqueta ocultada.','etiqueta direita')
+          once('        firstPane.addView(leftAudioBadge,lb);',
+               '        leftAudioBadge.setVisibility(View.GONE); // Etiqueta ocultada.','etiqueta esquerda')
+          
+          once('    private int audiblePane=1;', '''    private int audiblePane=1;
+              private TextView gestureHint;
+              private float gestureStartX,gestureStartY,gestureBrightness;
+              private int gestureStartVolume;
+              private boolean gestureDragging;
+              private final Runnable hideGestureHint=()->{
+                  if(gestureHint!=null)gestureHint.setVisibility(View.GONE);
+              };''','campos para gestos')
+          
+          once('''        tapArea.setOnTouchListener((v,event)->{
+                      if(event.getAction()!=android.view.MotionEvent.ACTION_UP)return true;
+                      long now=android.os.SystemClock.uptimeMillis();
+                      float x=event.getX();
+                      if(now-lastTapAt<340&&Math.abs(x-lastTapX)<dp(95)){
+                          lastTapAt=0;
+                          if(x<v.getWidth()*0.44f)skipSeconds(-10);
+                          else if(x>v.getWidth()*0.56f)skipSeconds(10);
+                          else showChrome();
+                      }else{lastTapAt=now;lastTapX=x;showChrome();}
+                      return true;
+                  });''', '''        tapArea.setOnTouchListener((v,event)->{
+                      int action=event.getActionMasked();
+                      if(action==android.view.MotionEvent.ACTION_DOWN){
+                          gestureStartX=event.getX();gestureStartY=event.getY();
+                          gestureStartVolume=playerVolume;
+                          android.view.WindowManager.LayoutParams attrs=getWindow().getAttributes();
+                          gestureBrightness=attrs.screenBrightness>=0?attrs.screenBrightness:0.55f;
+                          gestureDragging=false;
+                          return true;
+                      }
+                      if(action==android.view.MotionEvent.ACTION_MOVE){
+                          float dy=gestureStartY-event.getY();
+                          float dx=event.getX()-gestureStartX;
+                          if(!gestureDragging && Math.abs(dy)>dp(18) && Math.abs(dy)>Math.abs(dx)*1.2f)
+                              gestureDragging=true;
+                          if(gestureDragging){
+                              float fraction=dy/Math.max(1f,v.getHeight()*0.65f);
+                              if(gestureStartX<v.getWidth()*0.5f){
+                                  float brightness=Math.max(0.04f,Math.min(1f,gestureBrightness+fraction));
+                                  android.view.WindowManager.LayoutParams attrs=getWindow().getAttributes();
+                                  attrs.screenBrightness=brightness;
+                                  getWindow().setAttributes(attrs);
+                                  showGesture("☀ Brilho  "+Math.round(brightness*100)+"%");
+                              }else{
+                                  playerVolume=Math.max(0,Math.min(100,gestureStartVolume+Math.round(fraction*100)));
+                                  applyVolume();
+                                  if(volumeBar!=null)volumeBar.setProgress(playerVolume);
+                                  showGesture("♫ Volume  "+playerVolume+"%");
+                              }
+                          }
+                          return true;
+                      }
+                      if(action==android.view.MotionEvent.ACTION_CANCEL){
+                          gestureDragging=false;
+                          return true;
+                      }
+                      if(action==android.view.MotionEvent.ACTION_UP){
+                          if(gestureDragging){
+                              gestureDragging=false;lastTapAt=0;
+                              return true; // Gestos não trocam o áudio acidentalmente.
+                          }
+                          long now=android.os.SystemClock.uptimeMillis();
+                          float x=event.getX();
+                          if(splitEnabled){
+                              // Tela global sobre o LibVLC recebe o toque: escolhe áudio IMEDIATAMENTE.
+                              selectAudioPane(x<v.getWidth()*0.5f?1:2);
+                              lastTapAt=0;return true;
+                          }
+                          if(now-lastTapAt<340&&Math.abs(x-lastTapX)<dp(95)){
+                              lastTapAt=0;
+                              if(x<v.getWidth()*0.44f)skipSeconds(-10);
+                              else if(x>v.getWidth()*0.56f)skipSeconds(10);
+                              else showChrome();
+                          }else{lastTapAt=now;lastTapX=x;showChrome();}
+                          return true;
+                      }
+                      return true;
+                  });''', 'captura de toque e gestos')
+          
+          once('''        screen.addView(tapArea,new FrameLayout.LayoutParams(-1,-1));''', '''        screen.addView(tapArea,new FrameLayout.LayoutParams(-1,-1));
+                  // Indicador aparece APENAS durante o gesto; não ocupa as laterais permanentemente.
+                  gestureHint=text("",13,WHITE,true);
+                  gestureHint.setPadding(dp(14),dp(9),dp(14),dp(9));
+                  gestureHint.setBackground(shape(0xd91b1d3a,14));
+                  gestureHint.setVisibility(View.GONE);
+                  screen.addView(gestureHint,new FrameLayout.LayoutParams(-2,-2,Gravity.CENTER));''', 'indicador temporário')
+          
+          once('''    private void selectAudioPane(int which){''', '''    private void showGesture(String value){
+                  if(gestureHint==null||screen==null)return;
+                  gestureHint.setText(value);
+                  gestureHint.setVisibility(View.VISIBLE);
+                  screen.removeCallbacks(hideGestureHint);
+                  screen.postDelayed(hideGestureHint,650);
+              }
+              private void selectAudioPane(int which){''', 'helper indicador')
+          
+          once('''        setAudible(which);
+                  showChrome();
+              }
+              private void setAudible''', '''        setAudible(which);
+                  // Toque simples não abre barras nem adiciona etiquetas sobre o vídeo.
+              }
+              private void setAudible''','toque sem poluir')
+          
+          once('''Button split=button("▣ Dupla");split.setOnClickListener(v->{
+                      if(splitEnabled){disableSplit();split.setText("▣ Dupla");}
+                      else{enableSplit();split.setText("✕ Dupla");}''', '''Button split=button("▣ Dividir");split.setOnClickListener(v->{
+                      if(splitEnabled){disableSplit();split.setText("▣ Dividir");}
+                      else{enableSplit();split.setText("✕ Dividir");}''', 'botão Dividir')
+          
+          once('''screen.removeCallbacks(progressTicker);}stopVideo();''', '''screen.removeCallbacks(progressTicker);screen.removeCallbacks(hideGestureHint);}stopVideo();''', 'limpeza do indicador')
+          p.write_text(s,encoding='utf-8')
+          for key in ('selectAudioPane(x<v.getWidth()*0.5f?1:2)', 'attrs.screenBrightness=brightness',
+                      'showGesture("♫ Volume', 'Button split=button("▣ Dividir")'):
+              assert key in s,key
+          print('PATCH OK: áudio por toque, brilho esquerdo, volume direito, sem etiquetas, Dividir.')
+          XENA_GESTOS_PATCH
+          python3 -m py_compile patch_gestos.py
+          python3 patch_gestos.py
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          s=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java').read_text()
+          keys=['selectAudioPane(x<v.getWidth()*0.5f?1:2)', 'attrs.screenBrightness=brightness', 'showGesture("♫ Volume', 'Button split=button("▣ Dividir")', 'rightAudioBadge.setVisibility(View.GONE)', 'leftAudioBadge.setVisibility(View.GONE)']
+          assert all(k in s for k in keys), 'Patch incompleto'
+          print('GESTOS VALIDADOS: toque áudio, deslizar brilho/volume, sem etiquetas.')
+          PYVERIFY
+
+      - name: Aplicar nosso brilho e favoritos invertidos vermelho-sangue
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_xena_neon_favoritos.py <<'XENA_NEON_FAV_PATCH'
+          #!/usr/bin/env python3
+          """Tema XenaTV neon para TV ao Vivo e estrela invertida vermelho-sangue."""
+          from pathlib import Path
+          base=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app')
+          def exact(s,old,new,tag):
+           n=s.count(old)
+           if n!=1:raise RuntimeError(f'{tag}: esperado 1, encontrou {n}')
+           return s.replace(old,new,1)
+          
+          p=base/'LiveTvActivity.java';s=p.read_text()
+          s=exact(s,'private static final int BG=0xff0b0b1c, PANEL=0xff1a2038, WHITE=0xfff3f6fb,','private static final int BG=0xff0b061a, PANEL=0xff170e30, WHITE=0xfff3f6fb,','cores TV')
+          s=exact(s,'MUTED=0xffa9b4c8, MINT=0xffa8e6d0, STROKE=0xff4b5474;','MUTED=0xffc8bbdb, MINT=0xff49ff91, STROKE=0xffb641f5;\n    private static final int BLOOD=0xffb91635;','cores neon TV')
+          s=exact(s,'private GradientDrawable panel(int color,int radius){GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(dp(radius));d.setStroke(dp(1),STROKE);return d;}','''private GradientDrawable panel(int color,int radius){
+                  GradientDrawable d=new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
+                      new int[]{color,0xff241046,0xff091d2a});
+                  d.setCornerRadius(dp(radius));d.setStroke(dp(1),STROKE);return d;
+              }
+              private void neon(android.view.View v,boolean selected){
+                  v.setElevation(dp(selected?9:4));
+              }
+              private void favoriteAppearance(Button star,boolean saved){
+                  star.setRotation(180f); // Sempre de ponta-cabeça, inclusive desligada.
+                  star.setTextColor(saved?BLOOD:WHITE);
+                  GradientDrawable glow=new GradientDrawable();
+                  glow.setColor(saved?0xff390918:0xff190d32);
+                  glow.setCornerRadius(dp(14));
+                  glow.setStroke(dp(saved?2:1),saved?0xffe22d4a:0xffa243e3);
+                  star.setBackground(glow);
+                  star.setElevation(dp(saved?10:4));
+              }''','tema e helper TV')
+          s=exact(s,'if(group.equals(selectedGroup)){b.setBackground(panel(0xff352d5a,12));b.setTextColor(MINT);}','if(group.equals(selectedGroup)){b.setBackground(panel(0xff132d24,12));b.setTextColor(MINT);neon(b,true);}else neon(b,false);','chip TV')
+          s=exact(s,'line.setMinimumHeight(dp(78));line.setBackground(panel(PANEL,13));','line.setMinimumHeight(dp(78));line.setBackground(panel(PANEL,13));neon(line,false);','linhas TV')
+          s=exact(s,'star.setTextSize(25);star.setTextColor(c.favorite?MINT:WHITE);','star.setTextSize(25);favoriteAppearance(star,c.favorite);','favoritos TV init')
+          s=exact(s,'star.setTextColor(wanted?MINT:WHITE);','favoriteAppearance(star,wanted);','favoritos TV toggle')
+          p.write_text(s)
+          
+          p=base/'MainActivity.java';s=p.read_text()
+          s=exact(s,'TextView star=text(ch.favorite?"★":"☆",26,ch.favorite?MINT:WHITE,true);','TextView star=text(ch.favorite?"★":"☆",26,ch.favorite?0xffb91635:WHITE,true);\n        star.setRotation(180f);','main estrela invertida')
+          s=exact(s,'star.setBackground(shape(0xdd1a1a30,0xff6c658c,24));','star.setBackground(shape(ch.favorite?0xff390918:0xdd1a1a30,ch.favorite?0xffe22d4a:0xffa243e3,24));','main fundo estrela')
+          s=exact(s,'star.setTextColor(wanted?MINT:WHITE);','star.setTextColor(wanted?0xffb91635:WHITE);\n                        star.setBackground(shape(wanted?0xff390918:0xdd1a1a30,wanted?0xffe22d4a:0xffa243e3,24));','main toggle estrela')
+          p.write_text(s)
+          print('OK: estrela invertida e vermelho-sangue em TV ao Vivo, cartões e favoritos principais; brilho TV')
+          XENA_NEON_FAV_PATCH
+          python3 -m py_compile patch_xena_neon_favoritos.py
+          python3 patch_xena_neon_favoritos.py
+          python3 - <<'PYCHECK'
+          from pathlib import Path
+          base=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app')
+          live=(base/'LiveTvActivity.java').read_text()
+          main=(base/'MainActivity.java').read_text()
+          assert 'star.setRotation(180f)' in live and 'star.setRotation(180f)' in main
+          assert '0xffb91635' in live and '0xffb91635' in main
+          assert 'STROKE=0xffb641f5' in live
+          print('VALIDADO: favoritos invertidos e vermelho-sangue, neon na TV')
+          PYCHECK
+
+      - name: Corrigir barras, fundo e troca de canal em tela dividida
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_controles_precisos.py <<'XENA_CONTROLES_PATCH'
+          #!/usr/bin/env python3
+          """XenaTV 6.9: toque fora do video alterna barras; dentro seleciona audio;
+          ' Canais' substitui apenas video ativo. Aplicar depois de gestos + favoritos.
+          """
+          from pathlib import Path
+          p=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java')
+          s=p.read_text(encoding='utf-8')
+          def replace_one(old,new,label):
+           global s
+           n=s.count(old)
+           if n!=1: raise RuntimeError(f'{label}: esperado 1 trecho, encontrei {n}')
+           s=s.replace(old,new,1)
+          replace_one('''    private void showChrome(){''','''    private void toggleChrome(){
+                  if(open)return; // Guia aberto: nenhum toque deve fechar os controles inesperadamente.
+                  boolean showing=(controls!=null&&controls.getVisibility()==View.VISIBLE&&controls.getAlpha()>0.5f)
+                      ||(playerBar!=null&&playerBar.getVisibility()==View.VISIBLE&&playerBar.getAlpha()>0.5f);
+                  screen.removeCallbacks(hideChrome);
+                  if(showing)hideChrome.run();else showChrome();
+              }
+              private void showChrome(){''','alternar controles')
+          replace_one('''                if(splitEnabled){
+                              // Tela global sobre o LibVLC recebe o toque: escolhe áudio IMEDIATAMENTE.
+                              selectAudioPane(x<v.getWidth()*0.5f?1:2);
+                              lastTapAt=0;return true;
+                          }''','''                if(splitEnabled){
+                              // Imagem central: audio/tela ativa. Fundo galactico: exibir/ocultar barras.
+                              // Dois videos 16:9 lado a lado; nao confundir o fundo com video.
+                              float videoBand=Math.min(v.getHeight(),v.getWidth()*9f/32f);
+                              float top=(v.getHeight()-videoBand)*0.5f;
+                              float margin=dp(12);
+                              if(event.getY()<top-margin || event.getY()>top+videoBand+margin){
+                                  toggleChrome();
+                              }else{
+                                  selectAudioPane(x<v.getWidth()*0.5f?1:2);
+                              }
+                              lastTapAt=0;return true;
+                          }''','distinguindo video e fundo')
+          replace_one('''                }else{lastTapAt=now;lastTapX=x;showChrome();}''','''                }else{lastTapAt=now;lastTapX=x;toggleChrome();}''','alternar toque simples')
+          replace_one('''        if(selectingSecond){selectingSecond=false;playSecond(item);setGuide(false);return;}
+                  current=item;''','''        if(selectingSecond){selectingSecond=false;playSecond(item);setGuide(false);return;}
+                  // Na Tela Dividida, a escolha do guia muda SOMENTE a tela selecionada.
+                  if(splitEnabled && audiblePane==2){
+                      playSecond(item);
+                      setGuide(false);
+                      return;
+                  }
+                  current=item;''','troca de canal na tela ativa')
+          # prevent phantom overlays of gesture hints and excessive bars on player start
+          p.write_text(s,encoding='utf-8')
+          for key in ('toggleChrome()', 'if(splitEnabled && audiblePane==2)', 'float videoBand=', 'selectAudioPane(x<v.getWidth()*0.5f?1:2)'):
+           assert key in s,key
+          print('OK: fundo alterna TODAS as barras; toque no video seleciona audio; lista troca tela ativa; gestos preservados.')
+          XENA_CONTROLES_PATCH
+          python3 -m py_compile patch_controles_precisos.py
+          python3 patch_controles_precisos.py
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          s=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java').read_text()
+          for key in ('private void toggleChrome()', 'float videoBand=', 'if(splitEnabled && audiblePane==2)', 'rightAudioBadge.setVisibility(View.GONE)', 'leftAudioBadge.setVisibility(View.GONE)', 'attrs.screenBrightness=brightness', 'showGesture("♫ Volume'):
+              assert key in s, f'Recurso não aplicado: {key}'
+          assert s.count('{')==s.count('}'), 'Java com chaves desbalanceadas'
+          print('CONTROLES: toque em fundo alterna barras; video seleciona audio; canal troca apenas na metade ativa')
+          PYVERIFY
+
+      - name: Aplicar tela Início cinematográfica inspirada na Base44
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_inicio_base44.py <<'XENA_BASE44_HOME_PATCH'
+          #!/usr/bin/env python3
+          """XenaTV 6.9: tela Início cinematográfica inspirada na referência Base44.
+          Modifica apenas apresentação/navegação Home de MainActivity; preserva
+          importação, classificação, séries, player, fontes e demais atividades.
+          Aplicar após patch_xenatv_69_integrada.py (ícones locais disponíveis).
+          """
+          from pathlib import Path
+
+          p=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/MainActivity.java')
+          s=p.read_text(encoding='utf-8')
+
+          def once(old,new,label):
+              global s
+              n=s.count(old)
+              if n!=1: raise RuntimeError(f'{label}: esperado 1 trecho, encontrados {n}')
+              s=s.replace(old,new,1)
+
+          once('    private LinearLayout root, body, dock, sidebar, rows, groups;',
+          '''    private LinearLayout root, body, dock, sidebar, rows, groups;
+              // A personalização Base44 só aparece na aba Início; outras abas mantêm o visual existente.
+              private View homeNavigation,originalHeader,originalHeaderDivider,originalDockHolder,originalSideDivider;
+              private View pipoouHomeAnchor;''','campos de Home')
+
+          once('''        root.addView(header,lp(-1,-2));
+                  View divider=new View(this);divider.setBackgroundColor(0xff4b6a75);root.addView(divider,lp(-1,1));''',
+          '''        originalHeader=header;
+                  root.addView(header,lp(-1,-2));
+                  homeNavigation=buildCinematicHomeNavigation();
+                  root.addView(homeNavigation,0,lp(-1,61));
+                  View divider=new View(this);divider.setBackgroundColor(0xff4b6a75);
+                  originalHeaderDivider=divider;root.addView(divider,lp(-1,1));''','cabeçalho independente na Home')
+
+          once('''            View sideDivider=new View(this);sideDivider.setBackgroundColor(BORDER);
+                      contentArea.addView(sideDivider,lp(1,-1));refreshSidebar();''',
+          '''            View sideDivider=new View(this);sideDivider.setBackgroundColor(BORDER);
+                      originalSideDivider=sideDivider;
+                      contentArea.addView(sideDivider,lp(1,-1));refreshSidebar();''','separador lateral')
+
+          once('''        root.addView(holder,hp);refreshDock();''',
+          '''        originalDockHolder=holder;root.addView(holder,hp);refreshDock();''','salvar dock existente')
+
+          once('''        if(promoTicker!=null)promoHandler.removeCallbacks(promoTicker);
+                  body.removeAllViews();groups=null;rows=null;''',
+          '''        if(promoTicker!=null)promoHandler.removeCallbacks(promoTicker);
+                  boolean cinematicHome=HOME.equals(tab)&&platformBrand.isEmpty();
+                  if(homeNavigation!=null)homeNavigation.setVisibility(cinematicHome?View.VISIBLE:View.GONE);
+                  if(originalHeader!=null)originalHeader.setVisibility(cinematicHome?View.GONE:View.VISIBLE);
+                  if(originalHeaderDivider!=null)originalHeaderDivider.setVisibility(cinematicHome?View.GONE:View.VISIBLE);
+                  if(originalDockHolder!=null)originalDockHolder.setVisibility(cinematicHome?View.GONE:View.VISIBLE);
+                  if(sidebar!=null)sidebar.setVisibility(cinematicHome?View.GONE:View.VISIBLE);
+                  if(originalSideDivider!=null)originalSideDivider.setVisibility(cinematicHome?View.GONE:View.VISIBLE);
+                  if(cinematicHome)body.setPadding(dp(13),dp(11),dp(13),dp(24));
+                  else body.setPadding(dp(16),dp(17),dp(16),dp(24));
+                  body.removeAllViews();pipoouHomeAnchor=null;groups=null;rows=null;''','trocar layout apenas na Home')
+
+          start=s.index('    private void showHome(){')
+          end=s.index('    /** O Cantinho do Pipoou',start)
+          old=s[start:end]
+          assert old.count('    private void showHome(){')==1
+          replacement='''    /** Menu superior da Home: usa ícones neon já empacotados no APK.
+               * Não altera o cabeçalho nem a barra inferior das demais páginas. */
+              private View buildCinematicHomeNavigation(){
+                  HorizontalScrollView scroll=new HorizontalScrollView(this);
+                  scroll.setHorizontalScrollBarEnabled(false);
+                  scroll.setFillViewport(true);
+                  scroll.setBackground(gradient(0xee1d0e35,0xe90b2230,23));
+                  LinearLayout nav=row();nav.setGravity(Gravity.CENTER_VERTICAL);
+                  nav.setPadding(dp(13),dp(5),dp(13),dp(5));
+                  LinearLayout logo=col();logo.setGravity(Gravity.CENTER_VERTICAL);
+                  TextView name=text("XENATV",16,WHITE,true);name.setLetterSpacing(.15f);logo.addView(name);
+                  TextView premium=text("P R E M I U M",8,0xff43ee9e,true);logo.addView(premium);
+                  LinearLayout.LayoutParams brandLp=lp(130,48);brandLp.rightMargin=dp(15);
+                  nav.addView(logo,brandLp);
+                  String[] destinations={HOME,TV,MOVIES,SERIES,FAV,LIST};
+                  for(String destination:destinations){
+                      FrameLayout tile=new FrameLayout(this);
+                      tile.addView(xenaNavImage(destination,26),new FrameLayout.LayoutParams(dp(27),dp(27),Gravity.CENTER));
+                      tile.setBackground(shape(destination.equals(HOME)?0xff37104f:0x88170f32,
+                          destination.equals(HOME)?0xffbb45f5:0x884b3366,12));
+                      LinearLayout.LayoutParams navLp=lp(43,42);navLp.rightMargin=dp(4);
+                      nav.addView(tile,navLp);
+                      tile.setContentDescription("Abrir "+destination);
+                      tapMotion(tile);tile.setOnClickListener(v->navigate(destination));
+                  }
+                  Button pipoou=button("Pipoou",false);
+                  pipoou.setTextColor(0xfff4e9ff);
+                  pipoou.setBackground(shape(0x771c1236,0xff7441b0,19));
+                  LinearLayout.LayoutParams pipoLp=lp(82,41);pipoLp.leftMargin=dp(13);
+                  nav.addView(pipoou,pipoLp);
+                  pipoou.setOnClickListener(v->{
+                      if(pipoouHomeAnchor!=null&&scrolling!=null){
+                          scrolling.smoothScrollTo(0,pipoouHomeAnchor.getTop());
+                      }
+                  });
+                  Button games=button("Jogos",false);
+                  games.setBackground(shape(0x771c1236,0xff7441b0,19));
+                  LinearLayout.LayoutParams gameLp=lp(69,41);gameLp.leftMargin=dp(6);
+                  nav.addView(games,gameLp);games.setOnClickListener(v->navigate(GAMES));
+                  FrameLayout searchButton=new FrameLayout(this);
+                  searchButton.addView(xenaNavImage(SEARCH,26),new FrameLayout.LayoutParams(dp(27),dp(27),Gravity.CENTER));
+                  searchButton.setBackground(shape(0x771c1236,0xff7441b0,19));
+                  LinearLayout.LayoutParams searchLp=lp(44,41);searchLp.leftMargin=dp(6);
+                  nav.addView(searchButton,searchLp);
+                  searchButton.setContentDescription("Buscar na XenaTV");
+                  searchButton.setOnClickListener(v->navigate(SEARCH));
+                  scroll.addView(nav);return scroll;
+              }
+
+              private void homeTitle(String heading,String subtitle,String destination){
+                  LinearLayout line=row();line.setGravity(Gravity.CENTER_VERTICAL);
+                  TextView title=text(heading,20,WHITE,true);line.addView(title,new LinearLayout.LayoutParams(0,-2,1));
+                  TextView marker=text("●",13,0xff38e681,true);marker.setPadding(dp(6),0,0,0);
+                  line.addView(marker);
+                  if(destination!=null){
+                      Button all=button("Ver todos  ›",false);all.setBackgroundColor(Color.TRANSPARENT);
+                      all.setTextColor(0xffb79de0);line.addView(all,lp(93,39));
+                      all.setOnClickListener(v->navigate(destination));
+                  }
+                  body.addView(line);gap(body,1);
+                  if(subtitle!=null&&!subtitle.isEmpty()){
+                      body.addView(text(subtitle,11,MUTED,false));gap(body,11);
+                  }
+              }
+
+              /** Usa títulos IPTV reais; não fabrica doramas nem categorias. */
+              private void homeFilteredRail(String title,String hint,String kind,String categoryMatch){
+                  List<ChannelStore.Channel> found=store.query("Todos",kind,"",120,0);
+                  LinearLayout strip=row();int amount=0;
+                  for(ChannelStore.Channel ch:found){
+                      String label=(ch.category+" "+ch.name).toLowerCase(Locale.ROOT);
+                      if(categoryMatch!=null && !label.contains(categoryMatch)
+                          && !("dorama".equals(categoryMatch) &&
+                              (label.contains("k-drama")||label.contains("coreano")||label.contains("korean"))))continue;
+                      LinearLayout card=posterCard(ch,123);
+                      LinearLayout.LayoutParams cp=lp(123,222);cp.rightMargin=dp(10);
+                      strip.addView(card,cp);
+                      if(++amount>=12)break;
+                  }
+                  if(amount==0)return;
+                  homeTitle(title,hint,kind);
+                  HorizontalScrollView slider=new HorizontalScrollView(this);
+                  slider.setHorizontalScrollBarEnabled(false);slider.addView(strip);
+                  body.addView(slider);gap(body,22);
+              }
+
+              private void homeContinueSection(){
+                  homeTitle("Continuar assistindo","Seus conteúdos recentes",null);
+                  // 'Recentes' é histórico real da fonte; não simulamos percentual de progresso.
+                  List<ChannelStore.Channel> recent=store.query("Recentes",MOVIES,"",7,0);
+                  if(recent.isEmpty())recent=store.query("Recentes",SERIES,"",7,0);
+                  if(recent.isEmpty()){
+                      TextView info=text("Os conteúdos vistos recentemente aparecerão aqui quando disponíveis na sua lista.",12,MUTED,false);
+                      info.setPadding(dp(15),dp(20),dp(15),dp(20));
+                      info.setBackground(shape(0x99120d29,0xff4d2b67,15));
+                      body.addView(info,lp(-1,-2));gap(body,19);return;
+                  }
+                  LinearLayout rail=row();
+                  for(ChannelStore.Channel ch:recent){
+                      LinearLayout card=posterCard(ch,116);
+                      LinearLayout.LayoutParams pos=lp(116,211);pos.rightMargin=dp(10);
+                      rail.addView(card,pos);
+                  }
+                  HorizontalScrollView scroll=new HorizontalScrollView(this);
+                  scroll.setHorizontalScrollBarEnabled(false);scroll.addView(rail);
+                  body.addView(scroll);gap(body,23);
+              }
+
+              private void showHome(){
+                  String status=prefs.getString("status","");
+                  // A arte em destaque é real, da biblioteca IPTV ativa.
+                  List<ChannelStore.Channel> featured=store.query("Todos",MOVIES,"",1,0);
+                  ChannelStore.Channel spotlight=featured.isEmpty()?null:featured.get(0);
+                  FrameLayout hero=new FrameLayout(this);
+                  hero.setBackground(shape(0xff1a0b2e,0xffa346df,22));
+                  hero.setClipToOutline(true);
+                  ImageView backdrop=new ImageView(this);
+                  backdrop.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                  if(spotlight!=null)ChannelArtwork.bind(backdrop,spotlight.logo,true);
+                  else backdrop.setImageResource(R.drawable.xena_cosmic_banner);
+                  hero.addView(backdrop,new FrameLayout.LayoutParams(-1,-1));
+                  View darkShade=new View(this);
+                  GradientDrawable shading=new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
+                      new int[]{0xf50b091d,0xd9140b2c,0x55130c28,0x220b1526});
+                  darkShade.setBackground(shading);
+                  hero.addView(darkShade,new FrameLayout.LayoutParams(-1,-1));
+                  LinearLayout intro=col();intro.setGravity(Gravity.BOTTOM);
+                  intro.setPadding(dp(18),dp(16),dp(17),dp(23));
+                  TextView tag=text("●  EM DESTAQUE · SUA BIBLIOTECA",10,0xff57efb0,true);
+                  tag.setPadding(dp(11),dp(7),dp(11),dp(7));
+                  tag.setBackground(shape(0xba160a27,0xff6e349b,20));
+                  intro.addView(tag,lp(-2,30));gap(intro,12);
+                  TextView title=text(spotlight==null?"Seu cinema. Sua TV.":spotlight.name,
+                      widthDp()<430?29:36,WHITE,true);
+                  title.setMaxLines(2);intro.addView(title);gap(intro,9);
+                  intro.addView(text(spotlight==null?
+                      "Adicione sua lista IPTV para explorar filmes, séries e canais.":
+                      "Um destaque da sua biblioteca pessoal.",12,0xffd8d0e8,false));
+                  gap(intro,15);
+                  LinearLayout controls=row();
+                  Button watch=button(spotlight==null?"＋ Adicionar lista":"▶ Assistir",true);
+                  watch.setBackground(shape(0xff9b24ce,0xffbf57f5,19));
+                  watch.setTextColor(WHITE);
+                  controls.addView(watch,lp(-2,44));
+                  watch.setOnClickListener(v->{if(spotlight==null)showAddDialog();else handleItem(spotlight);});
+                  if(spotlight!=null){
+                      Button details=button("ⓘ Detalhes",false);
+                      LinearLayout.LayoutParams detailParams=lp(-2,44);detailParams.leftMargin=dp(8);
+                      controls.addView(details,detailParams);
+                      details.setOnClickListener(v->showDetails(spotlight));
+                  }
+                  intro.addView(controls);
+                  hero.addView(intro,new FrameLayout.LayoutParams(-1,-1,Gravity.BOTTOM));
+                  body.addView(hero,lp(-1,widthDp()<480?288:350));gap(body,24);
+
+                  if(store.count()==0){
+                      homeContinueSection();
+                      addPipoouSpotlight();gap(body,21);
+                      addPlatformShortcuts();gap(body,18);
+                      Button add=button("Adicionar minha lista IPTV",true);
+                      body.addView(add,lp(-1,48));add.setOnClickListener(v->showAddDialog());
+                      return;
+                  }
+                  homeContinueSection();
+                  addPipoouSpotlight();gap(body,22);
+                  addRail("Séries",SERIES); // Mesma consulta existente; nenhuma mudança na sincronização.
+                  homeFilteredRail("Doramas","Romances e dramas coreanos",SERIES,"dorama");
+                  homeTitle("Jogos de Hoje","Agenda e canais esportivos",GAMES);
+                  Button games=button("⚽ Conferir jogos do dia",false);
+                  games.setTextColor(0xff55eb99);games.setBackground(gradient(0xff22103c,0xff102c2d,16));
+                  body.addView(games,lp(-1,53));games.setOnClickListener(v->navigate(GAMES));
+                  gap(body,22);
+                  addRail("Filmes",MOVIES);
+                  addPlatformShortcuts();gap(body,20);
+                  if(loading||!status.isEmpty()){
+                      TextView note=text(loading?"Atualizando sua lista...":status,11,MUTED,false);
+                      note.setPadding(dp(12),dp(12),dp(12),dp(12));
+                      note.setBackground(shape(SURFACE,BORDER,13));body.addView(note);
+                  }
+              }
+          '''
+          s=s[:start]+replacement+s[end:]
+
+          # A seção Pipoou já tem seu slideshow e comportamento; só registra a âncora.
+          once('''        body.addView(card,lp(-1,-2));
+                  promoIndex=promoRandom.nextInt(promoResources.length);''',
+          '''        body.addView(card,lp(-1,-2));
+                  pipoouHomeAnchor=card;
+                  promoIndex=promoRandom.nextInt(promoResources.length);''','âncora Pipoou')
+
+          assert s.count('class MainActivity')==1
+          assert s.count('private void showHome(){')==1
+          assert 'private void switchPlatformKind(' in s # cadeado: mantém Séries intactas
+          assert 'private void showSeriesEpisodes(' in s
+          assert 'private void homeContinueSection()' in s
+          assert s.count('{')==s.count('}')
+          p.write_text(s,encoding='utf-8')
+          print('OK: tela Início premium tipo Base44 aplicada. Séries, sincronização, plataformas e player preservados.')
+          XENA_BASE44_HOME_PATCH
+          python3 -m py_compile patch_inicio_base44.py
+          python3 patch_inicio_base44.py
+          cat > patch_pipoou_banner_fullbleed.py <<'XENA_BANNER_PATCH'
+          #!/usr/bin/env python3
+          """XenaTV 6.9: Todas as artes do slideshow Pipoou em tela cheia no cartão,
+          com rotação a cada 8s. Aplicar ao final dos outros patches, antes do Gradle.
+          Não modifica a lógica de Séries, Filmes, TV ou bibliotecas.
+          """
+          from pathlib import Path
+
+          main = Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/MainActivity.java')
+          s = main.read_text(encoding='utf-8')
+
+          def replace_exact(before, after, label):
+              global s
+              matches = s.count(before)
+              if matches != 1:
+                  raise RuntimeError(f'{label}: esperado 1 trecho, encontrados {matches}')
+              s = s.replace(before, after, 1)
+
+          replace_exact(
+              '    private Runnable promoTicker;',
+              '    private Runnable promoTicker;\n'
+              '    // Todas as imagens do Cantinho do Pipoou giram a cada 8 segundos.\n'
+              '    private static final long PIPOOU_BANNER_INTERVAL_MS=8000L;',
+              'intervalo do banner')
+          replace_exact(
+              '        LinearLayout card=col();card.setPadding(dp(7),dp(7),dp(7),dp(10));',
+              '        LinearLayout card=col();card.setPadding(0,0,0,dp(10));',
+              'eliminar margens da imagem')
+          replace_exact(
+              '''        visual.setBackground(new GalaxyBackground(this,0xff10172b));
+                  promoImage=new ImageView(this);promoImage.setScaleType(ImageView.ScaleType.FIT_CENTER);''',
+              '''        // Fundo de reserva só é visto antes da imagem carregar; cantos recortados.
+                  visual.setBackground(shape(0xff10172b,0,17));
+                  visual.setClipToOutline(true);
+                  promoImage=new ImageView(this);
+                  // CENTER_CROP preenche 100% do quadro sem esticar nem deixar faixas vazias.
+                  // Aplica-se automaticamente a TODAS as nove imagens do carrossel.
+                  promoImage.setScaleType(ImageView.ScaleType.CENTER_CROP);''',
+              'preenchimento integral')
+          replace_exact(
+              '        promoHandler.postDelayed(promoTicker,20000L);',
+              '        promoHandler.postDelayed(promoTicker,PIPOOU_BANNER_INTERVAL_MS);',
+              'troca mais rápida')
+          main.write_text(s,encoding='utf-8')
+          assert 'ImageView.ScaleType.CENTER_CROP' in s
+          assert 'PIPOOU_BANNER_INTERVAL_MS=8000L' in s
+          assert 'promoHandler.postDelayed(promoTicker,PIPOOU_BANNER_INTERVAL_MS)' in s
+          assert s.count('{')==s.count('}')
+          print('OK: 9 banners sem laterais vazias, proporção preservada e troca automática a cada 8 s.')
+          XENA_BANNER_PATCH
+          python3 -m py_compile patch_pipoou_banner_fullbleed.py
+          python3 patch_pipoou_banner_fullbleed.py
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          app=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/MainActivity.java').read_text()
+          for key in ('buildCinematicHomeNavigation()', 'homeContinueSection()', 'homeFilteredRail(', 'PIPOOU_BANNER_INTERVAL_MS=8000L', 'ImageView.ScaleType.CENTER_CROP'):
+              assert key in app, f'Home incompleta: {key}'
+          for protected in ('switchPlatformKind(', 'showPlatformCatalog()', 'showSeriesEpisodes('):
+              assert protected in app, f'Bloco preservado ausente: {protected}'
+          assert app.count('{')==app.count('}')
+          print('HOME: cabeçalho cinematográfico, conteúdo real, Pipoou 8s e séries preservadas')
+          PYVERIFY
+
+
+      - name: CORRIGIR - Ao abrir TV ao vivo iniciar Mirante e nunca Fazenda
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_tv_mirante.py <<'XENA_MIRANTE_PATCH'
+          #!/usr/bin/env python3
+          """XenaTV 6.9 - Ao entrar na TV ao Vivo, priorize Mirante.
+          O acesso ao Pipoou continua usando only_fazenda=true e nao muda.
+          A regra nao altera catalogo de filmes ou series.
+          """
+          from pathlib import Path
+          p=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/LiveTvActivity.java')
+          s=p.read_text(encoding='utf-8')
+          old='''    private Entry chooseStartupChannel(){
+                  if(channels.isEmpty())return null;
+                  android.content.SharedPreferences prefs=getSharedPreferences("xena_tv_start_v1",MODE_PRIVATE);
+                  String savedAddress=prefs.getString("address","");
+                  String savedSource=prefs.getString("source","");
+                  if(!getIntent().getBooleanExtra("only_fazenda",false)&&!savedAddress.isEmpty()){
+                      for(Entry entry:channels){
+                          if(entry.sourceId.equals(savedSource)&&entry.address.equals(savedAddress))return entry;
+                      }
+                  }
+                  // Prefere a Fazenda/câmera principal das listas habilitadas.
+                  Entry best=null;int bestScore=Integer.MIN_VALUE;
+                  for(Entry entry:channels){
+                      int score=FazendaStartRules.score(entry.title,entry.group);
+                      if(score>bestScore){bestScore=score;best=entry;}
+                  }
+                  // Se não houver Fazenda, inicia a primeira TV válida em vez de uma tela vazia.
+                  if(bestScore==Integer.MIN_VALUE&&getIntent().getBooleanExtra("only_fazenda",false))return null;
+                  return bestScore==Integer.MIN_VALUE?channels.get(0):best;
+              }'''
+          new='''    private Entry chooseStartupChannel(){
+                  if(channels.isEmpty())return null;
+                  if(getIntent().getBooleanExtra("only_fazenda",false)){
+                      // A Fazenda abre automaticamente SOMENTE no Cantinho do Pipoou.
+                      Entry best=null;int bestScore=Integer.MIN_VALUE;
+                      for(Entry entry:channels){
+                          int score=FazendaStartRules.score(entry.title,entry.group);
+                          if(score>bestScore){bestScore=score;best=entry;}
+                      }
+                      return bestScore==Integer.MIN_VALUE?null:best;
+                  }
+                  // TV AO VIVO normal: a TV Mirante (São Luís/Globo) é o canal inicial.
+                  // Não reutiliza o antigo canal inicial salvo, que podia ser A Fazenda.
+                  Entry mirante=null;int bestScore=0;
+                  for(Entry entry:channels){
+                      int score=MiranteStartRules.score(entry.title,entry.group);
+                      if(score>bestScore){bestScore=score;mirante=entry;}
+                  }
+                  // Sem Mirante na lista? Mostrar a lista, NUNCA abrir A Fazenda.
+                  return mirante;
+              }'''
+          assert s.count(old)==1, f'Trecho de inicializacao nao encontrado: {s.count(old)}'
+          s=s.replace(old,new,1)
+          p.write_text(s,encoding='utf-8')
+          helper=p.with_name('MiranteStartRules.java')
+          helper.write_text('''package br.com.xenatv.app;
+
+          /** Seleciona somente Mirante/Globo São Luís para a TV normal. */
+          public final class MiranteStartRules {
+              private MiranteStartRules(){}
+              public static int score(String title,String group){
+                  if(FazendaStartRules.isFazenda(title,group))return 0;
+                  String name=FazendaStartRules.key(title);
+                  // Evitar confundir a categoria Globo com um canal real da Mirante.
+                  if(name.contains("tv mirante"))return 100;
+                  if(name.contains("globo mirante") || name.contains("mirante globo"))return 95;
+                  if(name.equals("mirante") || name.startsWith("mirante "))return 90;
+                  if(name.contains("globo sao luis") || name.contains("globo slz") ||
+                     name.contains("globo maranhao") || name.matches(".*\\\\bglobo\\\\s+ma\\\\b.*"))return 70;
+                  return 0;
+              }
+          }
+          ''',encoding='utf-8')
+          assert 'return mirante;' in s and 'only_fazenda' in s
+          print('PATCH OK: TV normal prioriza Mirante; Pipoou ainda prioriza Fazenda; ausência Mirante mostra canais.')
+          XENA_MIRANTE_PATCH
+          python3 -m py_compile patch_tv_mirante.py
+          python3 patch_tv_mirante.py
+          python3 - <<'XENA_MIRANTE_TEST'
+          from pathlib import Path
+          p=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/LiveTvActivity.java')
+          s=p.read_text(encoding='utf-8')
+          assert 'return mirante;' in s
+          assert 'if(getIntent().getBooleanExtra("only_fazenda",false))' in s
+          assert 'MiranteStartRules.score(entry.title,entry.group)' in s
+          assert 'Prefere a Fazenda/câmera principal' not in s
+          assert Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/MiranteStartRules.java').is_file()
+          print('INICIALIZACAO TV: Mirante prioritária; Fazenda só via Pipoou')
+          XENA_MIRANTE_TEST
+          cat > TestMiranteStart.java <<'TEST_MIRANTE'
+          package br.com.xenatv.app;
+          public class TestMiranteStart {
+              static void check(boolean ok){if(!ok)throw new AssertionError("Regra Mirante inválida");}
+              public static void main(String[] args){
+                  check(MiranteStartRules.score("TV Mirante HD","TV Aberta")>0);
+                  check(MiranteStartRules.score("Globo São Luís","TV Aberta")>0);
+                  check(MiranteStartRules.score("Globo MA","TV Aberta")>0);
+                  check(MiranteStartRules.score("A Fazenda câmera 1","Realities")==0);
+                  check(MiranteStartRules.score("Globo News","Notícias")==0);
+                  check(MiranteStartRules.score("TV Mirante","A Fazenda")==0);
+                  check(MiranteStartRules.score("Globo RJ","TV Aberta")==0);
+                  System.out.println("7 testes de canais TV Mirante OK");
+              }
+          }
+          TEST_MIRANTE
+          app=xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app
+          mkdir -p /tmp/teste_mirante_xenatv
+          cp TestMiranteStart.java /tmp/teste_mirante_xenatv/TestMiranteStart.java
+          javac -encoding UTF-8 -d /tmp/teste_mirante_xenatv \
+            "$app/FazendaStartRules.java" "$app/MiranteStartRules.java" /tmp/teste_mirante_xenatv/TestMiranteStart.java
+          java -cp /tmp/teste_mirante_xenatv br.com.xenatv.app.TestMiranteStart
+
+
+      - name: Adicionar downloads nativos de filmes e episódios
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d > patch_xenatv_downloads_vod.py <<'XENA_DOWNLOAD_PATCH'
+          IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwoiIiJYZW5hVFYgNi45OiBkb3dubG9hZHMgbmF0aXZvcyBkZSBhcnF1aXZvcyBWT0QgKGZp
+          bG1lcyBlIGVwaXNvZGlvcykuCgpBcGxpY2FyIEFQT1Mgb3MgcGF0Y2hlcyBpbnRlZ3JhZG9zIGUgQU5URVMgZG8gR3JhZGxlLiBO
+          YW8gYWx0ZXJhIGltcG9ydGFjYW8KWHRyZWFtLCBiYW5jbyBkZSBzZXJpZXMsIGNsYXNzaWZpY2Fkb3IgZGUgZmlsbWVzLCBwbGF5
+          ZXIgb3UgVFYgYW8gdml2by4KIiIiCmZyb20gcGF0aGxpYiBpbXBvcnQgUGF0aApwPVBhdGgoJ3hlbmEtcHJlbWl1bS9YZW5hVFZf
+          QW5kcm9pZC9hcHAvc3JjL21haW4vamF2YS9ici9jb20veGVuYXR2L2FwcC9NYWluQWN0aXZpdHkuamF2YScpCnM9cC5yZWFkX3Rl
+          eHQoZW5jb2Rpbmc9J3V0Zi04JykKCmRlZiBjaGFuZ2UoYmVmb3JlLGFmdGVyLGxhYmVsKToKICAgIGdsb2JhbCBzCiAgICBuPXMu
+          Y291bnQoYmVmb3JlKQogICAgaWYgbiE9MTpyYWlzZSBSdW50aW1lRXJyb3IoZid7bGFiZWx9OiBleHBlY3RlZCBleGFjdGx5IDEg
+          bWF0Y2gsIGZvdW5kIHtufScpCiAgICBzPXMucmVwbGFjZShiZWZvcmUsYWZ0ZXIsMSkKCiMgQWRpY2lvbmEgYmlibGlvdGVjYSBk
+          ZSBkb3dubG9hZHMgbm8gbWVudSwgY29tIHZlcmlmaWNhw6fDo28gZGUgcHJvZ3Jlc3NvIHJlYWwuCmNoYW5nZSgnJyci4piFICBG
+          YXZvcml0b3MiLCLimr0gIEpvZ29zIGRlIEhvamUiLCLijJUgIEJ1c2NhIHVuaXZlcnNhbCIsIuKYsCAgTWluaGFzIGxpc3RhcyIn
+          JycsCiAgICAgICAnJyci4piFICBGYXZvcml0b3MiLCLimr0gIEpvZ29zIGRlIEhvamUiLCLijJUgIEJ1c2NhIHVuaXZlcnNhbCIs
+          IuKshyAgTWV1cyBkb3dubG9hZHMiLCLimLAgIE1pbmhhcyBsaXN0YXMiJycnLAogICAgICAgJ21lbnUtcm90dWxvcycpCmNoYW5n
+          ZSgnJydTdHJpbmdbXSB0YXJnZXRzPXtIT01FLFRWLE1PVklFUyxTRVJJRVMsRkFWLEdBTUVTLFNFQVJDSCxMSVNUfTsnJycsCiAg
+          ICAgICAnJydTdHJpbmdbXSB0YXJnZXRzPXtIT01FLFRWLE1PVklFUyxTRVJJRVMsRkFWLEdBTUVTLFNFQVJDSCwiRE9XTkxPQURT
+          IixMSVNUfTsnJycsCiAgICAgICAnbWVudS1kZXN0aW5vcycpCmNoYW5nZSgnJycgICAgICAgICAgICAuc2V0SXRlbXMobGFiZWxz
+          LChkaWFsb2csd2hpY2gpLT5uYXZpZ2F0ZSh0YXJnZXRzW3doaWNoXSkpJycnLAogICAgICAgJycnICAgICAgICAgICAgLnNldEl0
+          ZW1zKGxhYmVscywoZGlhbG9nLHdoaWNoKS0+e2lmKCJET1dOTE9BRFMiLmVxdWFscyh0YXJnZXRzW3doaWNoXSkpWGVuYURvd25s
+          b2Fkcy5zaG93KHRoaXMpO2Vsc2UgbmF2aWdhdGUodGFyZ2V0c1t3aGljaF0pO30pJycnLAogICAgICAgJ21lbnUtYWNhbycpCgoj
+          IEZpbG1lcyBkaXJldG9zOiBib3RvZXMgQXNzaXN0aXIvRmF2b3JpdGFyIGphIGV4aXN0ZW50ZXMgc2FvIHByZXNlcnZhZG9zLgpj
+          aGFuZ2UoJycnICAgICAgICBjb250ZW50LmFkZFZpZXcoY29udHJvbHMpOwogICAgICAgIHdhdGNoLnNldE9uQ2xpY2tMaXN0ZW5l
+          cih2LT57ZGlhbG9nLmRpc21pc3MoKTtoYW5kbGVQbGF5YWJsZShjaCk7fSk7JycnLAogICAgICAgJycnICAgICAgICBjb250ZW50
+          LmFkZFZpZXcoY29udHJvbHMpOwogICAgICAgIGlmKE1PVklFUy5lcXVhbHMoY2gudHlwZSkpewogICAgICAgICAgICBnYXAoY29u
+          dGVudCw5KTsKICAgICAgICAgICAgQnV0dG9uIGRvd25sb2FkPWJ1dHRvbigi4qyHICBCYWl4YXIgZmlsbWUiLGZhbHNlKTsKICAg
+          ICAgICAgICAgZG93bmxvYWQuc2V0RW5hYmxlZChYZW5hRG93bmxvYWRzLnN1cHBvcnRlZChjaC50eXBlLGNoLnVybCkpOwogICAg
+          ICAgICAgICBpZighZG93bmxvYWQuaXNFbmFibGVkKCkpZG93bmxvYWQuc2V0VGV4dCgiRG93bmxvYWQgaW5kaXNwb27DrXZlbCBu
+          ZXN0YSBmb250ZSIpOwogICAgICAgICAgICBkb3dubG9hZC5zZXRDb250ZW50RGVzY3JpcHRpb24oIkJhaXhhciBmaWxtZSBwYXJh
+          IGFzc2lzdGlyIG9mZmxpbmUiKTsKICAgICAgICAgICAgY29udGVudC5hZGRWaWV3KGRvd25sb2FkLGxwKC0xLDQ3KSk7CiAgICAg
+          ICAgICAgIGRvd25sb2FkLnNldE9uQ2xpY2tMaXN0ZW5lcih2LT5YZW5hRG93bmxvYWRzLmVucXVldWUodGhpcyxjaC5uYW1lLGNo
+          LnR5cGUsY2gudXJsKSk7CiAgICAgICAgfQogICAgICAgIHdhdGNoLnNldE9uQ2xpY2tMaXN0ZW5lcih2LT57ZGlhbG9nLmRpc21p
+          c3MoKTtoYW5kbGVQbGF5YWJsZShjaCk7fSk7JycnLAogICAgICAgJ2Rvd25sb2FkLWZpbG1lJykKCiMgRXBpc8OzZGlvcyBYdHJl
+          YW06IG1hbnTDqW0gZXhhdGFtZW50ZSBhIG1lc21hIGxpc3RhL2NvbnN1bHRhOyBzb21lbnRlIGJvdMOjbyBlbSBjYWRhIGl0ZW0u
+          CmNoYW5nZSgnJycgICAgICAgICAgICAgICAgICAgIEJ1dHRvbiBwbGF5PWJ1dHRvbigi4pa2ICIrZS5uYW1lLGZhbHNlKTtwbGF5
+          LnNldFRleHRTaXplKDExKTsKICAgICAgICAgICAgICAgICAgICBMaW5lYXJMYXlvdXQuTGF5b3V0UGFyYW1zIHA9bHAoLTEsNTMp
+          O3AuYm90dG9tTWFyZ2luPWRwKDcpO2NvbnRlbnQuYWRkVmlldyhwbGF5LHApOwogICAgICAgICAgICAgICAgICAgIHBsYXkuc2V0
+          T25DbGlja0xpc3RlbmVyKHYtPntkaWFsb2cuZGlzbWlzcygpO29wZW5GdWxsc2NyZWVuKGVwaXNvZGUpO30pOycnJywKICAgICAg
+          ICcnJyAgICAgICAgICAgICAgICAgICAgTGluZWFyTGF5b3V0IGVwaXNvZGVBY3Rpb25zPXJvdygpOwogICAgICAgICAgICAgICAg
+          ICAgIEJ1dHRvbiBwbGF5PWJ1dHRvbigi4pa2ICIrZS5uYW1lLGZhbHNlKTtwbGF5LnNldFRleHRTaXplKDExKTsKICAgICAgICAg
+          ICAgICAgICAgICBlcGlzb2RlQWN0aW9ucy5hZGRWaWV3KHBsYXksbmV3IExpbmVhckxheW91dC5MYXlvdXRQYXJhbXMoMCxkcCg1
+          MyksMSkpOwogICAgICAgICAgICAgICAgICAgIEJ1dHRvbiBkb3dubG9hZD1idXR0b24oIuKshyIsZmFsc2UpOwogICAgICAgICAg
+          ICAgICAgICAgIGRvd25sb2FkLnNldFRleHRTaXplKDE3KTsKICAgICAgICAgICAgICAgICAgICBkb3dubG9hZC5zZXRDb250ZW50
+          RGVzY3JpcHRpb24oIkJhaXhhciBlcGlzw7NkaW8gIitlLm5hbWUpOwogICAgICAgICAgICAgICAgICAgIGRvd25sb2FkLnNldEVu
+          YWJsZWQoWGVuYURvd25sb2Fkcy5zdXBwb3J0ZWQoU0VSSUVTLGUudXJsKSk7CiAgICAgICAgICAgICAgICAgICAgTGluZWFyTGF5
+          b3V0LkxheW91dFBhcmFtcyBkbHA9bHAoNDksNTMpO2RscC5sZWZ0TWFyZ2luPWRwKDgpOwogICAgICAgICAgICAgICAgICAgIGVw
+          aXNvZGVBY3Rpb25zLmFkZFZpZXcoZG93bmxvYWQsZGxwKTsKICAgICAgICAgICAgICAgICAgICBMaW5lYXJMYXlvdXQuTGF5b3V0
+          UGFyYW1zIHA9bHAoLTEsNTMpO3AuYm90dG9tTWFyZ2luPWRwKDcpOwogICAgICAgICAgICAgICAgICAgIGNvbnRlbnQuYWRkVmll
+          dyhlcGlzb2RlQWN0aW9ucyxwKTsKICAgICAgICAgICAgICAgICAgICBwbGF5LnNldE9uQ2xpY2tMaXN0ZW5lcih2LT57ZGlhbG9n
+          LmRpc21pc3MoKTtvcGVuRnVsbHNjcmVlbihlcGlzb2RlKTt9KTsKICAgICAgICAgICAgICAgICAgICBkb3dubG9hZC5zZXRPbkNs
+          aWNrTGlzdGVuZXIodi0+WGVuYURvd25sb2Fkcy5lbnF1ZXVlKHRoaXMsc2hvdy5uYW1lKyIgLSAiK2UubmFtZSxTRVJJRVMsZS51
+          cmwpKTsnJycsCiAgICAgICAnZG93bmxvYWQtZXBpc29kaW9zJykKCiMgRmlsbWVzIC8gZXBpc29kaW9zIFNhaW1vOiBvZmVyZWNl
+          IHJlcHJvZHV6aXIgT1UgYmFpeGFyIGNhZGEgZm9udGUgcmVzb2x2aWRhLgpjaGFuZ2UoJycnICAgICAgICBTdHJpbmdbXSBsYWJl
+          bHM9bmV3IFN0cmluZ1t2YWxpZC5zaXplKCldO1N0cmluZ1tdIHVybHM9bmV3IFN0cmluZ1t2YWxpZC5zaXplKCldOycnJywKICAg
+          ICAgICcnJyAgICAgICAgU3RyaW5nW10gbGFiZWxzPW5ldyBTdHJpbmdbdmFsaWQuc2l6ZSgpKjJdO1N0cmluZ1tdIHVybHM9bmV3
+          IFN0cmluZ1t2YWxpZC5zaXplKCldOycnJywKICAgICAgICdzYWltby1sYWJlbC1hcnJheScpCmNoYW5nZSgnJycgICAgICAgICAg
+          ICBsYWJlbHNbaV09di5sYWJlbCsodi5xdWFsaXR5PT1udWxsfHx2LnF1YWxpdHkuaXNFbXB0eSgpPyIiOiIg4oCiICIrdi5xdWFs
+          aXR5KTsnJycsCiAgICAgICAnJycgICAgICAgICAgICBTdHJpbmcgZGVzY3JpcHRpb249di5sYWJlbCsodi5xdWFsaXR5PT1udWxs
+          fHx2LnF1YWxpdHkuaXNFbXB0eSgpPyIiOiIg4oCiICIrdi5xdWFsaXR5KTsKICAgICAgICAgICAgbGFiZWxzW2kqMl09IuKWtiAg
+          QXNzaXN0aXIgwrcgIitkZXNjcmlwdGlvbjsKICAgICAgICAgICAgbGFiZWxzW2kqMisxXT0oWGVuYURvd25sb2Fkcy5zdXBwb3J0
+          ZWQob3JpZ2luYWwudHlwZSx2LnVybCk/IuKshyAgQmFpeGFyIMK3ICI6IuKblCAgRG93bmxvYWQgaW5kaXNwb27DrXZlbCDCtyAi
+          KStkZXNjcmlwdGlvbjsnJycsCiAgICAgICAnc2FpbW8tc291cmNlLXJvd3MnKQpjaGFuZ2UoJycnICAgICAgICAgIC5zZXRJdGVt
+          cyhsYWJlbHMsKGQsd2hpY2gpLT57CiAgICAgICAgICAgICAgQ2hhbm5lbFN0b3JlLkNoYW5uZWwgaXRlbT1uZXcgQ2hhbm5lbFN0
+          b3JlLkNoYW5uZWwoMCxvcmlnaW5hbC5uYW1lLHVybHNbd2hpY2hdLG9yaWdpbmFsLmNhdGVnb3J5LG9yaWdpbmFsLmxvZ28sb3Jp
+          Z2luYWwudHlwZSxmYWxzZSk7JycnLAogICAgICAgJycnICAgICAgICAgIC5zZXRJdGVtcyhsYWJlbHMsKGQsd2hpY2gpLT57CiAg
+          ICAgICAgICAgICAgaW50IGluZGV4PXdoaWNoLzI7CiAgICAgICAgICAgICAgaWYod2hpY2glMj09MSl7WGVuYURvd25sb2Fkcy5l
+          bnF1ZXVlKHRoaXMsb3JpZ2luYWwubmFtZSxvcmlnaW5hbC50eXBlLHVybHNbaW5kZXhdKTtyZXR1cm47fQogICAgICAgICAgICAg
+          IENoYW5uZWxTdG9yZS5DaGFubmVsIGl0ZW09bmV3IENoYW5uZWxTdG9yZS5DaGFubmVsKDAsb3JpZ2luYWwubmFtZSx1cmxzW2lu
+          ZGV4XSxvcmlnaW5hbC5jYXRlZ29yeSxvcmlnaW5hbC5sb2dvLG9yaWdpbmFsLnR5cGUsZmFsc2UpOycnJywKICAgICAgICdzYWlt
+          by1zZWxlY3QnKQpjaGFuZ2UoJycnICAgICAgICAgICAgICBpbnRlbnQucHV0RXh0cmEoInNvdXJjZV9jaG9pY2UiLHdoaWNoKTsn
+          JycsCiAgICAgICAnJycgICAgICAgICAgICAgIGludGVudC5wdXRFeHRyYSgic291cmNlX2Nob2ljZSIsaW5kZXgpOycnJywKICAg
+          ICAgICdzYWltby1zb3VyY2UtaW5kZXgnKQoKcC53cml0ZV90ZXh0KHMsZW5jb2Rpbmc9J3V0Zi04JykKCmhlbHBlcj1wLndpdGhf
+          bmFtZSgnWGVuYURvd25sb2Fkcy5qYXZhJykKaGVscGVyLndyaXRlX3RleHQocicnJ3BhY2thZ2UgYnIuY29tLnhlbmF0di5hcHA7
+          CgppbXBvcnQgYW5kcm9pZC5hcHAuQWN0aXZpdHk7CmltcG9ydCBhbmRyb2lkLmFwcC5BbGVydERpYWxvZzsKaW1wb3J0IGFuZHJv
+          aWQuYXBwLkRvd25sb2FkTWFuYWdlcjsKaW1wb3J0IGFuZHJvaWQuY29udGVudC5Db250ZXh0OwppbXBvcnQgYW5kcm9pZC5jb250
+          ZW50LkludGVudDsKaW1wb3J0IGFuZHJvaWQuZGF0YWJhc2UuQ3Vyc29yOwppbXBvcnQgYW5kcm9pZC5uZXQuVXJpOwppbXBvcnQg
+          YW5kcm9pZC5vcy5FbnZpcm9ubWVudDsKaW1wb3J0IGFuZHJvaWQud2lkZ2V0LlRvYXN0OwppbXBvcnQgb3JnLmpzb24uSlNPTkFy
+          cmF5OwppbXBvcnQgb3JnLmpzb24uSlNPTk9iamVjdDsKaW1wb3J0IGphdmEuaW8uRmlsZTsKaW1wb3J0IGphdmEudXRpbC5Mb2Nh
+          bGU7CgovKiogRG93bmxvYWRzIFZPRCBwZWxhIEFQSSBkbyBBbmRyb2lkLiBOYW8gYmFpeGEgSExTLCBEQVNIIG91IERSTS4gKi8K
+          cHVibGljIGZpbmFsIGNsYXNzIFhlbmFEb3dubG9hZHMgewogICAgcHJpdmF0ZSBzdGF0aWMgZmluYWwgU3RyaW5nIFBSRUY9Inhl
+          bmFfdm9kX2Rvd25sb2Fkc192MSI7CiAgICBwcml2YXRlIHN0YXRpYyBmaW5hbCBTdHJpbmcgS0VZPSJpdGVtcyI7CiAgICBwcml2
+          YXRlIHN0YXRpYyBmaW5hbCBpbnQgTUFYX0lURU1TPTI1MDsKICAgIHByaXZhdGUgWGVuYURvd25sb2Fkcygpe30KCiAgICBwcml2
+          YXRlIHN0YXRpYyBTdHJpbmcgZXh0ZW5zaW9uKFN0cmluZyB1cmwpewogICAgICAgIGlmKHVybD09bnVsbClyZXR1cm4gIiI7CiAg
+          ICAgICAgdHJ5IHsKICAgICAgICAgICAgVXJpIHVyaT1VcmkucGFyc2UodXJsLnRyaW0oKSk7CiAgICAgICAgICAgIFN0cmluZyBz
+          Y2hlbWU9dXJpLmdldFNjaGVtZSgpOwogICAgICAgICAgICBpZighImh0dHAiLmVxdWFsc0lnbm9yZUNhc2Uoc2NoZW1lKSYmISJo
+          dHRwcyIuZXF1YWxzSWdub3JlQ2FzZShzY2hlbWUpKXJldHVybiAiIjsKICAgICAgICAgICAgaWYodXJpLmdldEhvc3QoKT09bnVs
+          bHx8dXJpLmdldEhvc3QoKS50cmltKCkuaXNFbXB0eSgpKXJldHVybiAiIjsKICAgICAgICAgICAgU3RyaW5nIHBhdGg9dXJpLmdl
+          dFBhdGgoKTtpZihwYXRoPT1udWxsKXJldHVybiAiIjsKICAgICAgICAgICAgU3RyaW5nIGxvd2VyPXBhdGgudG9Mb3dlckNhc2Uo
+          TG9jYWxlLlJPT1QpOwogICAgICAgICAgICBmb3IoU3RyaW5nIGV4dDpuZXcgU3RyaW5nW117Im1wNCIsIm1rdiIsIm00diIsIm1v
+          diIsImF2aSIsIndlYm0iLCJ0cyJ9KXsKICAgICAgICAgICAgICAgIGlmKGxvd2VyLmVuZHNXaXRoKCIuIitleHQpKXJldHVybiBl
+          eHQ7CiAgICAgICAgICAgIH0KICAgICAgICAgICAgLy8gQWxndW5zIHByb3ZlZG9yZXMgb21pdGVtIGEgZXh0ZW5zYW8gZW0gVVJM
+          cyBkZSBhcnF1aXZvIFh0cmVhbS4KICAgICAgICAgICAgaWYobG93ZXIuY29udGFpbnMoIi9tb3ZpZS8iKXx8bG93ZXIuY29udGFp
+          bnMoIi9zZXJpZXMvIikpewogICAgICAgICAgICAgICAgaWYobG93ZXIuZW5kc1dpdGgoIi5tM3U4Iil8fGxvd2VyLmVuZHNXaXRo
+          KCIubXBkIikpcmV0dXJuICIiOwogICAgICAgICAgICAgICAgcmV0dXJuICJtcDQiOwogICAgICAgICAgICB9CiAgICAgICAgICAg
+          IHJldHVybiAiIjsKICAgICAgICB9Y2F0Y2goRXhjZXB0aW9uIGlnbm9yZWQpe3JldHVybiAiIjt9CiAgICB9CiAgICBwdWJsaWMg
+          c3RhdGljIGJvb2xlYW4gc3VwcG9ydGVkKFN0cmluZyBraW5kLFN0cmluZyB1cmwpewogICAgICAgIGlmKCEiRmlsbWVzIi5lcXVh
+          bHMoa2luZCkmJiEiU8OpcmllcyIuZXF1YWxzKGtpbmQpKXJldHVybiBmYWxzZTsKICAgICAgICByZXR1cm4gIWV4dGVuc2lvbih1
+          cmwpLmlzRW1wdHkoKTsKICAgIH0KICAgIHByaXZhdGUgc3RhdGljIFN0cmluZyBzYWZlTmFtZShTdHJpbmcgdGl0bGUpewogICAg
+          ICAgIFN0cmluZyBjbGVhbmVkPSh0aXRsZT09bnVsbD8iQ29udGV1ZG8iOnRpdGxlKS5yZXBsYWNlQWxsKCJbXFxcXC86Kj9cIjw+
+          fFxceDAwLVxceDFGXSIsIiAiKQogICAgICAgICAgICAucmVwbGFjZUFsbCgiXFxzKyIsIiAiKS50cmltKCk7CiAgICAgICAgaWYo
+          Y2xlYW5lZC5sZW5ndGgoKT43NiljbGVhbmVkPWNsZWFuZWQuc3Vic3RyaW5nKDAsNzYpLnRyaW0oKTsKICAgICAgICBpZihjbGVh
+          bmVkLmlzRW1wdHkoKSljbGVhbmVkPSJDb250ZXVkbyI7CiAgICAgICAgcmV0dXJuIGNsZWFuZWQ7CiAgICB9CiAgICBwcml2YXRl
+          IHN0YXRpYyBTdHJpbmcgbWltZShTdHJpbmcgZXh0KXsKICAgICAgICBpZigibWt2Ii5lcXVhbHMoZXh0KSlyZXR1cm4gInZpZGVv
+          L3gtbWF0cm9za2EiOwogICAgICAgIGlmKCJ3ZWJtIi5lcXVhbHMoZXh0KSlyZXR1cm4gInZpZGVvL3dlYm0iOwogICAgICAgIGlm
+          KCJhdmkiLmVxdWFscyhleHQpKXJldHVybiAidmlkZW8veC1tc3ZpZGVvIjsKICAgICAgICBpZigidHMiLmVxdWFscyhleHQpKXJl
+          dHVybiAidmlkZW8vbXAydCI7CiAgICAgICAgcmV0dXJuICJ2aWRlby9tcDQiOwogICAgfQogICAgcHJpdmF0ZSBzdGF0aWMgSlNP
+          TkFycmF5IHJlYWQoQWN0aXZpdHkgYWN0aXZpdHkpewogICAgICAgIFN0cmluZyBqc29uPWFjdGl2aXR5LmdldFNoYXJlZFByZWZl
+          cmVuY2VzKFBSRUYsQ29udGV4dC5NT0RFX1BSSVZBVEUpLmdldFN0cmluZyhLRVksIltdIik7CiAgICAgICAgdHJ5e3JldHVybiBu
+          ZXcgSlNPTkFycmF5KGpzb24pO31jYXRjaChFeGNlcHRpb24gaWdub3JlZCl7cmV0dXJuIG5ldyBKU09OQXJyYXkoKTt9CiAgICB9
+          CiAgICBwdWJsaWMgc3RhdGljIHZvaWQgZW5xdWV1ZShBY3Rpdml0eSBhY3Rpdml0eSxTdHJpbmcgdGl0bGUsU3RyaW5nIGtpbmQs
+          U3RyaW5nIHVybCl7CiAgICAgICAgaWYoIXN1cHBvcnRlZChraW5kLHVybCkpewogICAgICAgICAgICBUb2FzdC5tYWtlVGV4dChh
+          Y3Rpdml0eSwiRXN0YSBmb250ZSBuw6NvIG9mZXJlY2UgYXJxdWl2byBkaXJldG8gcGFyYSBkb3dubG9hZC4iLFRvYXN0LkxFTkdU
+          SF9MT05HKS5zaG93KCk7cmV0dXJuOwogICAgICAgIH0KICAgICAgICB0cnkgewogICAgICAgICAgICBTdHJpbmcgZXh0PWV4dGVu
+          c2lvbih1cmwpOwogICAgICAgICAgICBGaWxlIGJhc2U9YWN0aXZpdHkuZ2V0RXh0ZXJuYWxGaWxlc0RpcihFbnZpcm9ubWVudC5E
+          SVJFQ1RPUllfTU9WSUVTKTsKICAgICAgICAgICAgaWYoYmFzZT09bnVsbCl0aHJvdyBuZXcgSWxsZWdhbFN0YXRlRXhjZXB0aW9u
+          KCJBcm1hemVuYW1lbnRvIGluZGlzcG9uw612ZWwiKTsKICAgICAgICAgICAgRmlsZSBmb2xkZXI9bmV3IEZpbGUoYmFzZSwiWGVu
+          YVRWIik7CiAgICAgICAgICAgIGlmKCFmb2xkZXIuaXNEaXJlY3RvcnkoKSYmIWZvbGRlci5ta2RpcnMoKSl0aHJvdyBuZXcgSWxs
+          ZWdhbFN0YXRlRXhjZXB0aW9uKCJTZW0gcGFzdGEgZGUgZG93bmxvYWRzIik7CiAgICAgICAgICAgIFN0cmluZyBmaWxlTmFtZT1z
+          YWZlTmFtZSh0aXRsZSkrIl8iK1N5c3RlbS5jdXJyZW50VGltZU1pbGxpcygpKyIuIitleHQ7CiAgICAgICAgICAgIERvd25sb2Fk
+          TWFuYWdlciBtYW5hZ2VyPShEb3dubG9hZE1hbmFnZXIpYWN0aXZpdHkuZ2V0U3lzdGVtU2VydmljZShDb250ZXh0LkRPV05MT0FE
+          X1NFUlZJQ0UpOwogICAgICAgICAgICBpZihtYW5hZ2VyPT1udWxsKXRocm93IG5ldyBJbGxlZ2FsU3RhdGVFeGNlcHRpb24oIlNl
+          cnZpw6dvIGRlIGRvd25sb2FkcyBpbmRpc3BvbsOtdmVsIik7CiAgICAgICAgICAgIERvd25sb2FkTWFuYWdlci5SZXF1ZXN0IHJl
+          cXVlc3Q9bmV3IERvd25sb2FkTWFuYWdlci5SZXF1ZXN0KFVyaS5wYXJzZSh1cmwudHJpbSgpKSk7CiAgICAgICAgICAgIHJlcXVl
+          c3Quc2V0VGl0bGUoIlhlbmFUViDCtyAiK3RpdGxlKTsKICAgICAgICAgICAgcmVxdWVzdC5zZXREZXNjcmlwdGlvbigiRG93bmxv
+          YWQgZGUgIisoIlPDqXJpZXMiLmVxdWFscyhraW5kKT8iZXBpc8OzZGlvIjoiZmlsbWUiKSk7CiAgICAgICAgICAgIHJlcXVlc3Qu
+          c2V0TWltZVR5cGUobWltZShleHQpKTsKICAgICAgICAgICAgcmVxdWVzdC5zZXROb3RpZmljYXRpb25WaXNpYmlsaXR5KERvd25s
+          b2FkTWFuYWdlci5SZXF1ZXN0LlZJU0lCSUxJVFlfVklTSUJMRV9OT1RJRllfQ09NUExFVEVEKTsKICAgICAgICAgICAgcmVxdWVz
+          dC5zZXRBbGxvd2VkT3Zlck1ldGVyZWQodHJ1ZSk7CiAgICAgICAgICAgIHJlcXVlc3Quc2V0QWxsb3dlZE92ZXJSb2FtaW5nKGZh
+          bHNlKTsKICAgICAgICAgICAgcmVxdWVzdC5zZXREZXN0aW5hdGlvbkluRXh0ZXJuYWxGaWxlc0RpcihhY3Rpdml0eSxFbnZpcm9u
+          bWVudC5ESVJFQ1RPUllfTU9WSUVTLCJYZW5hVFYvIitmaWxlTmFtZSk7CiAgICAgICAgICAgIGxvbmcgaWQ9bWFuYWdlci5lbnF1
+          ZXVlKHJlcXVlc3QpOwogICAgICAgICAgICBKU09OT2JqZWN0IGl0ZW09bmV3IEpTT05PYmplY3QoKTtpdGVtLnB1dCgiaWQiLGlk
+          KTtpdGVtLnB1dCgidGl0bGUiLHRpdGxlKTsKICAgICAgICAgICAgaXRlbS5wdXQoIm5hbWUiLGZpbGVOYW1lKTtpdGVtLnB1dCgi
+          dHlwZSIsa2luZCk7CiAgICAgICAgICAgIEpTT05BcnJheSBiZWZvcmU9cmVhZChhY3Rpdml0eSksYWZ0ZXI9bmV3IEpTT05BcnJh
+          eSgpOwogICAgICAgICAgICBhZnRlci5wdXQoaXRlbSk7CiAgICAgICAgICAgIGZvcihpbnQgaT0wO2k8YmVmb3JlLmxlbmd0aCgp
+          JiZpPE1BWF9JVEVNUy0xO2krKylhZnRlci5wdXQoYmVmb3JlLm9wdEpTT05PYmplY3QoaSkpOwogICAgICAgICAgICBhY3Rpdml0
+          eS5nZXRTaGFyZWRQcmVmZXJlbmNlcyhQUkVGLENvbnRleHQuTU9ERV9QUklWQVRFKS5lZGl0KCkucHV0U3RyaW5nKEtFWSxhZnRl
+          ci50b1N0cmluZygpKS5hcHBseSgpOwogICAgICAgICAgICBUb2FzdC5tYWtlVGV4dChhY3Rpdml0eSwiRG93bmxvYWQgaW5pY2lh
+          ZG8uIEFjb21wYW5oZSBlbSBNZXVzIGRvd25sb2Fkcy4iLFRvYXN0LkxFTkdUSF9MT05HKS5zaG93KCk7CiAgICAgICAgfWNhdGNo
+          KEV4Y2VwdGlvbiBlcnJvcil7CiAgICAgICAgICAgIFRvYXN0Lm1ha2VUZXh0KGFjdGl2aXR5LCJOw6NvIGZvaSBwb3Nzw612ZWwg
+          aW5pY2lhciBvIGRvd25sb2FkOiAiK2Vycm9yLmdldE1lc3NhZ2UoKSxUb2FzdC5MRU5HVEhfTE9ORykuc2hvdygpOwogICAgICAg
+          IH0KICAgIH0KICAgIHB1YmxpYyBzdGF0aWMgdm9pZCBzaG93KEFjdGl2aXR5IGFjdGl2aXR5KXsKICAgICAgICB0cnl7CiAgICAg
+          ICAgICAgIERvd25sb2FkTWFuYWdlciBtYW5hZ2VyPShEb3dubG9hZE1hbmFnZXIpYWN0aXZpdHkuZ2V0U3lzdGVtU2VydmljZShD
+          b250ZXh0LkRPV05MT0FEX1NFUlZJQ0UpOwogICAgICAgICAgICBKU09OQXJyYXkgZGF0YT1yZWFkKGFjdGl2aXR5KTsKICAgICAg
+          ICAgICAgaWYobWFuYWdlcj09bnVsbHx8ZGF0YS5sZW5ndGgoKT09MCl7CiAgICAgICAgICAgICAgICBuZXcgQWxlcnREaWFsb2cu
+          QnVpbGRlcihhY3Rpdml0eSkuc2V0VGl0bGUoIk1ldXMgZG93bmxvYWRzIikKICAgICAgICAgICAgICAgICAgICAuc2V0TWVzc2Fn
+          ZSgiTmVuaHVtIGZpbG1lIG91IGVwaXPDs2RpbyBiYWl4YWRvIGFpbmRhLiIpCiAgICAgICAgICAgICAgICAgICAgLnNldFBvc2l0
+          aXZlQnV0dG9uKCJPSyIsbnVsbCkuc2hvdygpO3JldHVybjsKICAgICAgICAgICAgfQogICAgICAgICAgICBpbnQgY291bnQ9TWF0
+          aC5taW4oZGF0YS5sZW5ndGgoKSxNQVhfSVRFTVMpO1N0cmluZ1tdIGl0ZW1zPW5ldyBTdHJpbmdbY291bnRdOwogICAgICAgICAg
+          ICBsb25nW10gaWRzPW5ldyBsb25nW2NvdW50XTtpbnRbXSBzdGF0ZXM9bmV3IGludFtjb3VudF07CiAgICAgICAgICAgIGZvcihp
+          bnQgaT0wO2k8Y291bnQ7aSsrKXsKICAgICAgICAgICAgICAgIEpTT05PYmplY3Qgb2JqPWRhdGEub3B0SlNPTk9iamVjdChpKTtp
+          ZihvYmo9PW51bGwpY29udGludWU7CiAgICAgICAgICAgICAgICBsb25nIGlkPW9iai5vcHRMb25nKCJpZCIsLTEpO2lkc1tpXT1p
+          ZDsKICAgICAgICAgICAgICAgIGludCBzdGF0dXM9LTE7bG9uZyBzb0Zhcj0wLHRvdGFsPS0xOwogICAgICAgICAgICAgICAgdHJ5
+          KEN1cnNvciBjdXJzb3I9bWFuYWdlci5xdWVyeShuZXcgRG93bmxvYWRNYW5hZ2VyLlF1ZXJ5KCkuc2V0RmlsdGVyQnlJZChpZCkp
+          KXsKICAgICAgICAgICAgICAgICAgICBpZihjdXJzb3IhPW51bGwmJmN1cnNvci5tb3ZlVG9GaXJzdCgpKXsKICAgICAgICAgICAg
+          ICAgICAgICAgICAgc3RhdHVzPWN1cnNvci5nZXRJbnQoY3Vyc29yLmdldENvbHVtbkluZGV4T3JUaHJvdyhEb3dubG9hZE1hbmFn
+          ZXIuQ09MVU1OX1NUQVRVUykpOwogICAgICAgICAgICAgICAgICAgICAgICBzb0Zhcj1jdXJzb3IuZ2V0TG9uZyhjdXJzb3IuZ2V0
+          Q29sdW1uSW5kZXhPclRocm93KERvd25sb2FkTWFuYWdlci5DT0xVTU5fQllURVNfRE9XTkxPQURFRF9TT19GQVIpKTsKICAgICAg
+          ICAgICAgICAgICAgICAgICAgdG90YWw9Y3Vyc29yLmdldExvbmcoY3Vyc29yLmdldENvbHVtbkluZGV4T3JUaHJvdyhEb3dubG9h
+          ZE1hbmFnZXIuQ09MVU1OX1RPVEFMX1NJWkVfQllURVMpKTsKICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICB9
+          Y2F0Y2goRXhjZXB0aW9uIGlnbm9yZWQpe30KICAgICAgICAgICAgICAgIHN0YXRlc1tpXT1zdGF0dXM7CiAgICAgICAgICAgICAg
+          ICBTdHJpbmcgc3RhdGU7CiAgICAgICAgICAgICAgICBpZihzdGF0dXM9PURvd25sb2FkTWFuYWdlci5TVEFUVVNfU1VDQ0VTU0ZV
+          TClzdGF0ZT0i4pyTIENvbmNsdcOtZG8gwrcgdG9xdWUgcGFyYSBhYnJpciI7CiAgICAgICAgICAgICAgICBlbHNlIGlmKHN0YXR1
+          cz09RG93bmxvYWRNYW5hZ2VyLlNUQVRVU19GQUlMRUQpc3RhdGU9IuKclSBGYWxob3UgwrcgdGVudGUgbm92YW1lbnRlIG5hIGZv
+          bnRlIjsKICAgICAgICAgICAgICAgIGVsc2UgaWYoc3RhdHVzPT1Eb3dubG9hZE1hbmFnZXIuU1RBVFVTX1JVTk5JTkcpewogICAg
+          ICAgICAgICAgICAgICAgIHN0YXRlPSLirIcgQmFpeGFuZG8iKyh0b3RhbD4wPyIgwrcgIisoc29GYXIqMTAwL3RvdGFsKSsiJSI6
+          IiIpOwogICAgICAgICAgICAgICAgfWVsc2UgaWYoc3RhdHVzPT1Eb3dubG9hZE1hbmFnZXIuU1RBVFVTX1BBVVNFRClzdGF0ZT0i
+          4o+4IFBhdXNhZG8gcGVsbyBBbmRyb2lkIjsKICAgICAgICAgICAgICAgIGVsc2UgaWYoc3RhdHVzPT1Eb3dubG9hZE1hbmFnZXIu
+          U1RBVFVTX1BFTkRJTkcpc3RhdGU9IuKMmyBBZ3VhcmRhbmRvIjsKICAgICAgICAgICAgICAgIGVsc2Ugc3RhdGU9IkFycXVpdm8g
+          bsOjbyBlbmNvbnRyYWRvIjsKICAgICAgICAgICAgICAgIGl0ZW1zW2ldPW9iai5vcHRTdHJpbmcoInRpdGxlIiwiVsOtZGVvIikr
+          IlxuIitzdGF0ZTsKICAgICAgICAgICAgfQogICAgICAgICAgICBuZXcgQWxlcnREaWFsb2cuQnVpbGRlcihhY3Rpdml0eSkuc2V0
+          VGl0bGUoIk1ldXMgZG93bmxvYWRzIMK3IGZpbG1lcyBlIHPDqXJpZXMiKQogICAgICAgICAgICAgICAgLnNldEl0ZW1zKGl0ZW1z
+          LChkaWFsb2csaW5kZXgpLT57CiAgICAgICAgICAgICAgICAgICAgaWYoc3RhdGVzW2luZGV4XSE9RG93bmxvYWRNYW5hZ2VyLlNU
+          QVRVU19TVUNDRVNTRlVMKXtzaG93KGFjdGl2aXR5KTtyZXR1cm47fQogICAgICAgICAgICAgICAgICAgIHRyeXsKICAgICAgICAg
+          ICAgICAgICAgICAgICAgVXJpIGZpbGU9bWFuYWdlci5nZXRVcmlGb3JEb3dubG9hZGVkRmlsZShpZHNbaW5kZXhdKTsKICAgICAg
+          ICAgICAgICAgICAgICAgICAgaWYoZmlsZT09bnVsbCl0aHJvdyBuZXcgSWxsZWdhbFN0YXRlRXhjZXB0aW9uKCJBcnF1aXZvIG7D
+          o28gZW5jb250cmFkbyIpOwogICAgICAgICAgICAgICAgICAgICAgICBJbnRlbnQgb3Blbj1uZXcgSW50ZW50KEludGVudC5BQ1RJ
+          T05fVklFVyk7CiAgICAgICAgICAgICAgICAgICAgICAgIG9wZW4uc2V0RGF0YUFuZFR5cGUoZmlsZSwidmlkZW8vKiIpOwogICAg
+          ICAgICAgICAgICAgICAgICAgICBvcGVuLmFkZEZsYWdzKEludGVudC5GTEFHX0dSQU5UX1JFQURfVVJJX1BFUk1JU1NJT04pOwog
+          ICAgICAgICAgICAgICAgICAgICAgICBhY3Rpdml0eS5zdGFydEFjdGl2aXR5KEludGVudC5jcmVhdGVDaG9vc2VyKG9wZW4sIkFz
+          c2lzdGlyIG9mZmxpbmUiKSk7CiAgICAgICAgICAgICAgICAgICAgfWNhdGNoKEV4Y2VwdGlvbiBleCl7VG9hc3QubWFrZVRleHQo
+          YWN0aXZpdHksIk7Do28gZm9pIHBvc3PDrXZlbCBhYnJpciBvIGFycXVpdm86ICIrZXguZ2V0TWVzc2FnZSgpLFRvYXN0LkxFTkdU
+          SF9MT05HKS5zaG93KCk7fQogICAgICAgICAgICAgICAgfSkuc2V0UG9zaXRpdmVCdXR0b24oIkF0dWFsaXphciIsKGRpYWxvZyx3
+          aGljaCktPnNob3coYWN0aXZpdHkpKQogICAgICAgICAgICAgICAgLnNldE5lZ2F0aXZlQnV0dG9uKCJGZWNoYXIiLG51bGwpLnNo
+          b3coKTsKICAgICAgICB9Y2F0Y2goRXhjZXB0aW9uIGV4KXtUb2FzdC5tYWtlVGV4dChhY3Rpdml0eSwiRXJybyBhbyBjb25zdWx0
+          YXIgZG93bmxvYWRzOiAiK2V4LmdldE1lc3NhZ2UoKSxUb2FzdC5MRU5HVEhfTE9ORykuc2hvdygpO30KICAgIH0KfQonJycsZW5j
+          b2Rpbmc9J3V0Zi04JykKCiMgTXVkYW5jYXMgZGUgbGF5b3V0IGFwZW5hcy4gU2VtIGFsdGVyYWNhbyBubyBwYXJzZXIgWHRyZWFt
+          IG91IG5hIGltcG9ydGFjYW8uCmZvciBtYXJrIGluICgnWGVuYURvd25sb2Fkcy5lbnF1ZXVlKHRoaXMsY2gubmFtZSxjaC50eXBl
+          LGNoLnVybCknLAogICAgICAgICAgICAgJ1hlbmFEb3dubG9hZHMuZW5xdWV1ZSh0aGlzLHNob3cubmFtZSsiIC0gIitlLm5hbWUs
+          U0VSSUVTLGUudXJsKScsCiAgICAgICAgICAgICAnWGVuYURvd25sb2Fkcy5zaG93KHRoaXMpJywKICAgICAgICAgICAgICdpbnQg
+          aW5kZXg9d2hpY2gvMjsnLAogICAgICAgICAgICAgJ3ByaXZhdGUgdm9pZCBzaG93U2VyaWVzRXBpc29kZXMoJyk6CiAgICBhc3Nl
+          cnQgbWFyayBpbiBzLG1hcmsKZm9yIG1hcmsgaW4gKCdEb3dubG9hZE1hbmFnZXIuUmVxdWVzdCcsJ3NldERlc3RpbmF0aW9uSW5F
+          eHRlcm5hbEZpbGVzRGlyJywnZ2V0VXJpRm9yRG93bmxvYWRlZEZpbGUnLCdTVEFUVVNfRkFJTEVEJywnU1RBVFVTX1JVTk5JTkcn
+          KToKICAgIGFzc2VydCBtYXJrIGluIGhlbHBlci5yZWFkX3RleHQoKSxtYXJrCmFzc2VydCBzLmNvdW50KCd7Jyk9PXMuY291bnQo
+          J30nKSwnTWFpbkFjdGl2aXR5IGJyYWNlcyBtaXNiYWxhbmNlZCcKcHJpbnQoJ09LOiBib3RvZXMgZG93bmxvYWQgZmlsbWVzLCBl
+          cGlzb2Rpb3MsIFNhaW1vOyBnZXJlbmNpYWRvciBzaXN0ZW1hICsgcHJvZ3Jlc3NvIHJlYWw7IHNlcmllcyBzeW5jIHByZXNlcnZh
+          ZGEuJykK
+          XENA_DOWNLOAD_PATCH
+          python3 -m py_compile patch_xenatv_downloads_vod.py
+          python3 patch_xenatv_downloads_vod.py
+          python3 - <<'XENA_VOD_DOWNLOAD_TEST'
+          from pathlib import Path
+          app=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app')
+          main=(app/'MainActivity.java').read_text()
+          helper=(app/'XenaDownloads.java').read_text()
+          for needed in ('XenaDownloads.enqueue(this,ch.name,ch.type,ch.url)',
+                         'XenaDownloads.enqueue(this,show.name+" - "+e.name,SERIES,e.url)',
+                         'Meus downloads','if(which%2==1)',
+                         'private void syncSeries('):
+              assert needed in main, needed
+          for needed in ('DownloadManager.Request','STATUS_RUNNING','STATUS_FAILED',
+                         'getUriForDownloadedFile','setDestinationInExternalFilesDir'):
+              assert needed in helper, needed
+          assert main.count('{')==main.count('}')
+          print('Download nativo: filmes e episódios + lista de progresso; séries intactas.')
+          XENA_VOD_DOWNLOAD_TEST
+
+      - name: Compilar APK debug para testes
+        working-directory: xena-premium/XenaTV_Android
+        run: gradle --no-daemon --stacktrace assembleDebug
+
+      - name: Publicar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: XenaTV-6-9-DOWNLOAD-FILMES-SERIES-APK
+          path: xena-premium/XenaTV_Android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
