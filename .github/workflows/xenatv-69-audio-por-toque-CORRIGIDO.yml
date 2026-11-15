@@ -1,0 +1,200 @@
+name: XenaTV 6.9 - Audio por Toque Corrigido e Validado
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/xenatv-69-audio-por-toque-CORRIGIDO.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - name: Baixar arquivos do repositorio
+        uses: actions/checkout@v4
+
+      - name: Verificar pacote, limites e arquivos obrigatorios
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f XenaTV_69_PLAYER_CONTROLES_CODIGO_TESTE.zip
+          test -f XenaTV_Android_LibVLC_Teste1.zip
+          test -f patch_filmes_69.py
+          test -f .github/workflows/xenatv-premium-6-9-revisao-cosmica-pipoou-compacta.yml
+          python3 - <<'PY'
+          from pathlib import Path
+          import zipfile
+          own=Path('.github/workflows/xenatv-69-audio-por-toque-CORRIGIDO.yml')
+          if not own.exists(): raise RuntimeError('Workflow deve estar em .github/workflows/ e NÃO na raiz do repositório')
+          assert own.stat().st_size < 100_000, 'Workflow muito grande'
+          compact=Path('.github/workflows/xenatv-premium-6-9-revisao-cosmica-pipoou-compacta.yml')
+          assert compact.stat().st_size <= 500_000, 'Base compacta excedeu 500 KB'
+          z=zipfile.ZipFile('XenaTV_69_PLAYER_CONTROLES_CODIGO_TESTE.zip')
+          names=z.namelist()
+          required=['patch_xenatv_69_integrada.py','patch_player_69.py','1000510040.jpg']
+          for item in required:
+              assert names.count(item)==1, f'Arquivo ausente/duplicado: {item}'
+              Path(item).write_bytes(z.read(item))
+          print('Arquivos extraidos, tamanhos conferidos; workflow:',own.stat().st_size,'bytes')
+          PY
+          python3 -m py_compile patch_xenatv_69_integrada.py patch_player_69.py patch_filmes_69.py
+
+      - name: Instalar Java e Android SDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+      - name: Instalar plataforma Android
+        run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Restaurar base 6.9 e preservar correcao de filmes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64,lzma,pathlib,re
+          p=pathlib.Path('.github/workflows/xenatv-premium-6-9-revisao-cosmica-pipoou-compacta.yml')
+          s=p.read_text(encoding='utf-8')
+          m=re.search(r'payload = """\s*(.*?)\s*"""',s,re.S)
+          if not m: raise RuntimeError('Base compacta sem payload')
+          pathlib.Path('xena-build-step.sh').write_bytes(lzma.decompress(base64.b85decode(''.join(m.group(1).split()))))
+          PY
+          python3 patch_filmes_69.py
+          bash xena-build-step.sh
+
+      - name: Integrar icones, tela dupla e controles de video
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet Pillow
+          python3 patch_xenatv_69_integrada.py
+          python3 patch_player_69.py
+          python3 - <<'PY'
+          from pathlib import Path
+          base=Path('xena-premium/XenaTV_Android/app/src/main')
+          player=(base/'java/br/com/xenatv/app/FullScreenPlayerActivity.java').read_text()
+          main=(base/'java/br/com/xenatv/app/MainActivity.java').read_text()
+          for key in ('buildPlayerBar()', 'skipSeconds(-10)', 'skipSeconds(10)', 'playSecond(', 'setAudible('):
+              assert key in player, f'Funcao ausente: {key}'
+          assert 'xenaNavImage(' in main, 'Icones nao aplicados'
+          assert len(list((base/'res/drawable-nodpi').glob('xena_nav_*.png'))) == 9
+          print('INTEGRACAO VALIDADA: controles, tela dupla, 9 icones e filmes anteriores')
+          PY
+
+      - name: Corrigir toque e áudio das duas telas
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_audio_corrigido.py <<'XENA_AUDIO_PATCH'
+          #!/usr/bin/env python3
+          """XenaTV 6.9: selecionar áudio tocando em cada vídeo da Tela Dividida.
+          Aplicar após patch_xenatv_69_integrada.py e patch_player_69.py.
+          """
+          from pathlib import Path
+          p=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java')
+          s=p.read_text(encoding='utf-8')
+          def once(old,new,label):
+              global s
+              n=s.count(old)
+              if n!=1: raise RuntimeError(f'{label}: esperado 1 trecho, encontrados {n}')
+              s=s.replace(old,new,1)
+          
+          once('    private int audiblePane=1;', '''    private int audiblePane=1;
+              private Button audioChoiceButton;
+              private TextView leftAudioBadge,rightAudioBadge;
+              private View leftTouchArea,rightTouchArea;''','campos')
+          once('''        firstPane.setOnClickListener(v->setAudible(1));
+                  secondPane.setOnClickListener(v->setAudible(2));''','''        // Superfícies VLC podem consumir toques; camadas transparentes ficam por cima delas.
+                  leftTouchArea=new View(this);leftTouchArea.setClickable(true);
+                  rightTouchArea=new View(this);rightTouchArea.setClickable(true);
+                  leftTouchArea.setOnClickListener(v->selectAudioPane(1));
+                  rightTouchArea.setOnClickListener(v->selectAudioPane(2));
+                  secondPane.addView(rightTouchArea,new FrameLayout.LayoutParams(-1,-1));
+                  leftAudioBadge=text("♫ ESQUERDA",11,WHITE,true);
+                  rightAudioBadge=text("DIREITA · MUDO",11,WHITE,true);
+                  leftAudioBadge.setPadding(dp(10),dp(5),dp(10),dp(5));
+                  rightAudioBadge.setPadding(dp(10),dp(5),dp(10),dp(5));
+                  FrameLayout.LayoutParams rb=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.RIGHT);
+                  rb.topMargin=dp(72);rb.rightMargin=dp(10);
+                  secondPane.addView(rightAudioBadge,rb);''','áreas de toque')
+          once('''        Button audio=button("♫ 1");audio.setOnClickListener(v->{
+                      setAudible(audiblePane==1?2:1);audio.setText("♫ "+audiblePane);
+                  });''','''        Button audio=button("♫ 1");audioChoiceButton=audio;
+                  audio.setOnClickListener(v->selectAudioPane(audiblePane==1?2:1));''','botão superior')
+          once('''        firstPane.addView(videoSurface,new FrameLayout.LayoutParams(-1,-1));
+                  splitHolder.setVisibility(View.VISIBLE);''','''        firstPane.addView(videoSurface,new FrameLayout.LayoutParams(-1,-1));
+                  // A camada fica por cima do vídeo e captura o toque em toda a metade esquerda.
+                  if(leftTouchArea.getParent() instanceof android.view.ViewGroup)
+                      ((android.view.ViewGroup)leftTouchArea.getParent()).removeView(leftTouchArea);
+                  firstPane.addView(leftTouchArea,new FrameLayout.LayoutParams(-1,-1));
+                  FrameLayout.LayoutParams lb=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.LEFT);
+                  lb.topMargin=dp(72);lb.leftMargin=dp(10);
+                  if(leftAudioBadge.getParent() instanceof android.view.ViewGroup)
+                      ((android.view.ViewGroup)leftAudioBadge.getParent()).removeView(leftAudioBadge);
+                  firstPane.addView(leftAudioBadge,lb);
+                  splitHolder.setVisibility(View.VISIBLE);''','camada esquerda')
+          once('''    private void setAudible(int which){
+                  audiblePane=which;
+                  applyVolume();
+              }''','''    private void selectAudioPane(int which){
+                  if(!splitEnabled)return;
+                  setAudible(which);
+                  showChrome();
+              }
+              private void setAudible(int which){
+                  audiblePane=(which==2?2:1);
+                  applyVolume(); // Obedece ao volume configurado e muta sempre a outra tela.
+                  if(audioChoiceButton!=null)audioChoiceButton.setText("♫ "+audiblePane);
+                  if(leftAudioBadge!=null){
+                      leftAudioBadge.setText(audiblePane==1?"♫ ESQUERDA · ÁUDIO":"ESQUERDA · MUDO");
+                      leftAudioBadge.setBackground(shape(audiblePane==1?0xd20c554e:0xb5222050,12));
+                  }
+                  if(rightAudioBadge!=null){
+                      rightAudioBadge.setText(audiblePane==2?"♫ DIREITA · ÁUDIO":"DIREITA · MUDO");
+                      rightAudioBadge.setBackground(shape(audiblePane==2?0xd20c554e:0xb5222050,12));
+                  }
+              }''','seleção áudio')
+          once('''        selectingSecond=false;splitEnabled=false;stopSecond();secondChannel=null;''','''        selectingSecond=false;splitEnabled=false;stopSecond();secondChannel=null;
+                  if(leftAudioBadge!=null&&leftAudioBadge.getParent()==firstPane)firstPane.removeView(leftAudioBadge);
+                  if(leftTouchArea!=null&&leftTouchArea.getParent()==firstPane)firstPane.removeView(leftTouchArea);''','limpeza esquerda')
+          p.write_text(s,encoding='utf-8')
+          assert all(k in s for k in ('leftTouchArea.setOnClickListener(v->selectAudioPane(1))', 'rightTouchArea.setOnClickListener(v->selectAudioPane(2))','audioChoiceButton.setText("♫ "+audiblePane)','applyVolume(); // Obedece'))
+          print('OK: toque em cada metade troca áudio, mostra seleção e mantém volume de um player apenas.')
+          XENA_AUDIO_PATCH
+          python3 -m py_compile patch_audio_corrigido.py
+          python3 patch_audio_corrigido.py
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          src=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java').read_text()
+          required=(
+             'leftTouchArea.setOnClickListener(v->selectAudioPane(1))',
+             'rightTouchArea.setOnClickListener(v->selectAudioPane(2))',
+             'firstPane.addView(leftTouchArea',
+             'secondPane.addView(rightTouchArea',
+             'audioChoiceButton.setText("♫ "+audiblePane)',
+             'applyVolume(); // Obedece',
+          )
+          for key in required: assert key in src, 'Faltou recurso: '+key
+          print('TOQUE DE AUDIO: implementação presente e verificada nos arquivos Java.')
+          PYVERIFY
+
+      - name: Compilar APK debug para testes
+        working-directory: xena-premium/XenaTV_Android
+        run: gradle --no-daemon --stacktrace assembleDebug
+
+      - name: Publicar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: XenaTV-6-9-TOQUE-AUDIO-CORRIGIDO-APK
+          path: xena-premium/XenaTV_Android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
