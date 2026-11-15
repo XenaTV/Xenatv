@@ -1,0 +1,640 @@
+name: XenaTV 6.9 - Filmes nas Plataformas V2 (Series Preservadas)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/xenatv-69-FILMES-PLATAFORMAS-CORRIGIDOS-V2.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - name: Baixar arquivos do repositorio
+        uses: actions/checkout@v4
+
+      - name: Verificar pacote, limites e arquivos obrigatorios
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f XenaTV_69_PLAYER_CONTROLES_CODIGO_TESTE.zip
+          test -f XenaTV_Android_LibVLC_Teste1.zip
+          test -f patch_filmes_69.py
+          test -f .github/workflows/xenatv-premium-6-9-revisao-cosmica-pipoou-compacta.yml
+          python3 - <<'PY'
+          from pathlib import Path
+          import zipfile
+          own=Path('.github/workflows/xenatv-69-FILMES-PLATAFORMAS-CORRIGIDOS-V2.yml')
+          if not own.exists(): raise RuntimeError('Workflow deve estar em .github/workflows/ e NÃO na raiz do repositório')
+          assert own.stat().st_size < 100_000, 'Workflow muito grande'
+          compact=Path('.github/workflows/xenatv-premium-6-9-revisao-cosmica-pipoou-compacta.yml')
+          assert compact.stat().st_size <= 500_000, 'Base compacta excedeu 500 KB'
+          z=zipfile.ZipFile('XenaTV_69_PLAYER_CONTROLES_CODIGO_TESTE.zip')
+          names=z.namelist()
+          required=['patch_xenatv_69_integrada.py','patch_player_69.py','1000510040.jpg']
+          for item in required:
+              assert names.count(item)==1, f'Arquivo ausente/duplicado: {item}'
+              Path(item).write_bytes(z.read(item))
+          print('Arquivos extraidos, tamanhos conferidos; workflow:',own.stat().st_size,'bytes')
+          PY
+          python3 -m py_compile patch_xenatv_69_integrada.py patch_player_69.py patch_filmes_69.py
+
+      - name: Instalar Java e Android SDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+      - name: Instalar plataforma Android
+        run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Restaurar base 6.9 e preservar correcao de filmes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64,lzma,pathlib,re
+          p=pathlib.Path('.github/workflows/xenatv-premium-6-9-revisao-cosmica-pipoou-compacta.yml')
+          s=p.read_text(encoding='utf-8')
+          m=re.search(r'payload = """\s*(.*?)\s*"""',s,re.S)
+          if not m: raise RuntimeError('Base compacta sem payload')
+          pathlib.Path('xena-build-step.sh').write_bytes(lzma.decompress(base64.b85decode(''.join(m.group(1).split()))))
+          PY
+          python3 patch_filmes_69.py
+          # Corrigir somente sincronizacao de FILMES; manter series, TV e favoritos intactos.
+          cat > patch_vod_filmes_v2.py <<'XENA_FILMES_PATCH_V2'
+          #!/usr/bin/env python3
+          """Correção incremental: VOD Xtream separado da TV e das séries.
+          Aplica no xena-build-step.sh APÓS patch_filmes_69.py e ANTES do bash.
+          Não reescreve série, não remove TV, não lê credenciais fora do aparelho.
+          """
+          from pathlib import Path
+          p = Path('xena-build-step.sh')
+          s = p.read_text(encoding='utf-8')
+          
+          def inject(anchor: str, addition: str, label: str):
+              global s
+              n=s.count(anchor)
+              if n!=1: raise RuntimeError(f'{label}: esperado exatamente 1 ponto, encontrado {n}')
+              s=s.replace(anchor,addition+anchor,1)
+          
+          def rep(old: str,new: str,label: str):
+              global s
+              n=s.count(old)
+              if n!=1: raise RuntimeError(f'{label}: trecho original mudou ({n} ocorrências)')
+              s=s.replace(old,new,1)
+          
+          # 1) Xtream: consultar get_vod_streams mesmo quando a lista M3U de TV já retornou dados.
+          # As categorias são devolvidas pelo fornecedor: não inventar associação Netflix/Prime/etc.
+          method = r'''    /** Importação EXCLUSIVA de filmes da fonte Xtream; TV/séries intocadas. */
+              public static ArrayList<M3UStreamParser.Channel> moviesOnly(String source) throws IOException {
+                  Account a=account(source);
+                  Map<String,String> categories=categories(a,"get_vod_categories");
+                  JSONArray movies=array(a,"get_vod_streams");
+                  String user=URLEncoder.encode(a.user,"UTF-8"),pass=URLEncoder.encode(a.password,"UTF-8");
+                  ArrayList<M3UStreamParser.Channel> out=new ArrayList<>();
+                  for(int i=0;i<movies.length()&&out.size()<M3UStreamParser.MAX_CHANNELS;i++){
+                      JSONObject m=movies.optJSONObject(i);if(m==null)continue;
+                      String id=m.optString("stream_id","");
+                      if(!id.matches("[0-9]+"))continue;
+                      String extension=safeExt(m.optString("container_extension","mp4"));
+                      String name=m.optString("name","Filme "+id);
+                      String group="Filmes • "+categories.getOrDefault(m.optString("category_id",""),"Sem categoria");
+                      String cover=m.optString("stream_icon","");
+                      String url=a.base+"movie/"+user+"/"+pass+"/"+id+"."+extension;
+                      out.add(new M3UStreamParser.Channel(name,url,group,cover));
+                  }
+                  return out;
+              }
+          '''
+          inject('    /** Consulta apenas séries. Não depende de importar nem sobrescreve os canais ao vivo. */',method,'XtreamCatalog.moviesOnly')
+          
+          # 2) SQLite: upsert por URL de vídeo, preservando todos os registros de séries e TV.
+          method = r'''    /** Importa/atualiza APENAS filmes Xtream, sem substituir TV/séries/favoritos. */
+              public int mergeMovies(List<M3UStreamParser.Channel> films){
+                  SQLiteDatabase db=getWritableDatabase();
+                  db.beginTransaction();
+                  int count=0;
+                  try{
+                      db.execSQL("CREATE INDEX IF NOT EXISTS idx_xena_movie_address ON channels(address)");
+                      android.content.ContentValues row=new android.content.ContentValues();
+                      for(M3UStreamParser.Channel c:films){
+                          if(c.url==null||!c.url.contains("/movie/"))continue;
+                          row.clear();
+                          row.put("title",c.name==null?"Filme":c.name);
+                          row.put("address",c.url);
+                          row.put("category",c.category==null?"Filmes • Sem categoria":c.category);
+                          row.put("logo",c.logo==null?"":c.logo);
+                          row.put("kind","Filmes");
+                          int changed=db.update("channels",row,"address=? AND kind<>'Séries'",new String[]{c.url});
+                          if(changed==0){
+                              // A fonte Xtream fornece IDs VOD; uma URL de série nunca é reutilizada.
+                              if(db.insert("channels",null,row)<0)throw new android.database.SQLException("Falha ao gravar filme");
+                          }
+                          count++;
+                      }
+                      db.setTransactionSuccessful();
+                  }finally{db.endTransaction();}
+                  return count;
+              }
+          '''
+          inject('    /** Altera apenas alternativas da mesma fonte. Sem senhas publicadas no projeto. */',method,'ChannelStore.mergeMovies')
+          
+          # 3) Interface: botão explícito para refazer sync e fluxo automático uma vez por dia.
+          old = '''        if(MOVIES.equals(kind)){
+                      Button link=button("⚙  Associar categorias de filmes das minhas listas",false);'''
+          new = '''        if(MOVIES.equals(kind)){
+                      Button update=button("↻ Sincronizar filmes das minhas listas",false);
+                      body.addView(update,lp(-1,48));gap(body,8);
+                      update.setOnClickListener(v->{
+                          // Somente o cache da sincronização de FILMES é invalidado.
+                          getSharedPreferences("xena_vod_sync_v2",MODE_PRIVATE).edit().clear().apply();
+                          ++platformRevision;renderBody();
+                      });
+                      Button link=button("⚙  Associar categorias de filmes das minhas listas",false);'''
+          rep(old,new,'Botão sincronizar filmes')
+          
+          # Injetar dentro do worker de plataforma, não na importação principal. Assim mesmo
+          # quem já importou M3U e tem 210 séries agora recupera seus filmes automaticamente.
+          old = '''                sources++;
+                          ChannelStore db=null;
+                          try{
+                              db=new ChannelStore(this,src.id);
+                              // Categorias reais da IPTV + vinculos locais escolhidos pelo usuário.'''
+          new = '''                sources++;
+                          ChannelStore db=null;
+                          try{
+                              db=new ChannelStore(this,src.id);
+                              if(MOVIES.equals(kind)&&XtreamCatalog.supports(src.url)){
+                                  android.content.SharedPreferences syncPrefs=getSharedPreferences("xena_vod_sync_v2",MODE_PRIVATE);
+                                  long last=syncPrefs.getLong(src.id,0L);
+                                  if((last==0L||System.currentTimeMillis()-last>12L*60*60*1000)
+                                      && System.currentTimeMillis()>=syncPrefs.getLong(src.id+"_retry",0L)){
+                                      try{
+                                          // Fonte acessada só no aparelho. A API falhar não apaga o catálogo.
+                                          ArrayList<M3UStreamParser.Channel> fresh=XtreamCatalog.moviesOnly(src.url);
+                                          if(!fresh.isEmpty())db.mergeMovies(fresh);
+                                          syncPrefs.edit().putLong(src.id,System.currentTimeMillis()).remove(src.id+"_retry").apply();
+                                      }catch(Exception ex){
+                                          syncPrefs.edit().putLong(src.id+"_retry",System.currentTimeMillis()+10L*60*1000).apply();
+                                          android.util.Log.w("XenaMovies", "API VOD indisponível para esta fonte: "+ex.getClass().getSimpleName());
+                                      }
+                                  }
+                              }
+                              // Categorias reais da IPTV + vinculos locais escolhidos pelo usuário.'''
+          rep(old,new,'Sync automático por fonte antes do catálogo')
+          
+          # Não carregar milhares de objetos simultaneamente: já existe "Mostrar mais títulos".
+          # Limite antigo de 210 por grupo se mantém apenas para séries, intocadas pelo patch.
+          rep('int cap=Math.min(group.count,210);',
+              'int cap=MOVIES.equals(kind)?Math.min(group.count,3000):Math.min(group.count,210);',
+              'Paginação do catálogo de filmes')
+          rep('''                        if(result.size()>800)break;
+                              }
+                          }catch(Exception ignored)''', '''                        if(result.size()>(MOVIES.equals(kind)?12000:800))break;
+                              }
+                          }catch(Exception ignored)''', 'Limite de resultados na categoria')
+          rep('''                if(result.size()>800)break;
+                      }
+                      final int countSources''',
+              '''                if(result.size()>(MOVIES.equals(kind)?12000:800))break;
+                      }
+                      final int countSources''',
+              'Limite global de resultados')
+          
+          # 4) Uma categoria explicitamente nomeada por outra plataforma nunca pode vazar
+          # para a página errada devido a um vínculo manual antigo.
+          rep('return PlatformShortcutRules.matches(platform,category)\n            ||(linked!=null&&linked.contains(key(sourceId,category)));','String detected=CategoryIconRules.brand(category);\n        if(detected!=null&&!detected.isEmpty())return PlatformShortcutRules.matches(platform,category);\n        return linked!=null&&linked.contains(key(sourceId,category));','Validação de plataforma nomeada')
+          
+          # Categorias de outra plataforma não aparecem como opção para associação incorreta.
+          rep('if(PlatformShortcutRules.matches(brand,group.title))continue;\n                        keys.add','if(!CategoryIconRules.brand(group.title).isEmpty())continue;\n                        keys.add','Não misturar categorias de plataformas')
+          
+          # 4) A sincronização manual deve listar também grupos antes classificados como TV com VOD.
+          rep('for(ChannelStore.Group group:db.allCategories(MOVIES)){',
+              'for(ChannelStore.Group group:db.allMovieCategories()){',
+              'Associação manual de filmes')
+          
+          assert 'db.allMovieCategories()' in s  # criado pelo patch_filmes_69.py
+          p.write_text(s,encoding='utf-8')
+          print('OK: VOD separado de M3U e séries; sincronização automática/manual; mapeamento fiel às categorias IPTV.')
+          XENA_FILMES_PATCH_V2
+          python3 -m py_compile patch_vod_filmes_v2.py
+          python3 patch_vod_filmes_v2.py
+          bash xena-build-step.sh
+
+      - name: Integrar icones, tela dupla e controles de video
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet Pillow
+          python3 patch_xenatv_69_integrada.py
+          python3 patch_player_69.py
+          python3 - <<'PY'
+          from pathlib import Path
+          base=Path('xena-premium/XenaTV_Android/app/src/main')
+          player=(base/'java/br/com/xenatv/app/FullScreenPlayerActivity.java').read_text()
+          main=(base/'java/br/com/xenatv/app/MainActivity.java').read_text()
+          for key in ('buildPlayerBar()', 'skipSeconds(-10)', 'skipSeconds(10)', 'playSecond(', 'setAudible('):
+              assert key in player, f'Funcao ausente: {key}'
+          assert 'xenaNavImage(' in main, 'Icones nao aplicados'
+          assert len(list((base/'res/drawable-nodpi').glob('xena_nav_*.png'))) == 9
+          print('INTEGRACAO VALIDADA: controles, tela dupla, 9 icones e filmes anteriores')
+          PY
+
+      - name: Corrigir toque e áudio das duas telas
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_audio_corrigido.py <<'XENA_AUDIO_PATCH'
+          #!/usr/bin/env python3
+          """XenaTV 6.9: selecionar áudio tocando em cada vídeo da Tela Dividida.
+          Aplicar após patch_xenatv_69_integrada.py e patch_player_69.py.
+          """
+          from pathlib import Path
+          p=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java')
+          s=p.read_text(encoding='utf-8')
+          def once(old,new,label):
+              global s
+              n=s.count(old)
+              if n!=1: raise RuntimeError(f'{label}: esperado 1 trecho, encontrados {n}')
+              s=s.replace(old,new,1)
+          
+          once('    private int audiblePane=1;', '''    private int audiblePane=1;
+              private Button audioChoiceButton;
+              private TextView leftAudioBadge,rightAudioBadge;
+              private View leftTouchArea,rightTouchArea;''','campos')
+          once('''        firstPane.setOnClickListener(v->setAudible(1));
+                  secondPane.setOnClickListener(v->setAudible(2));''','''        // Superfícies VLC podem consumir toques; camadas transparentes ficam por cima delas.
+                  leftTouchArea=new View(this);leftTouchArea.setClickable(true);
+                  rightTouchArea=new View(this);rightTouchArea.setClickable(true);
+                  leftTouchArea.setOnClickListener(v->selectAudioPane(1));
+                  rightTouchArea.setOnClickListener(v->selectAudioPane(2));
+                  secondPane.addView(rightTouchArea,new FrameLayout.LayoutParams(-1,-1));
+                  leftAudioBadge=text("♫ ESQUERDA",11,WHITE,true);
+                  rightAudioBadge=text("DIREITA · MUDO",11,WHITE,true);
+                  leftAudioBadge.setPadding(dp(10),dp(5),dp(10),dp(5));
+                  rightAudioBadge.setPadding(dp(10),dp(5),dp(10),dp(5));
+                  FrameLayout.LayoutParams rb=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.RIGHT);
+                  rb.topMargin=dp(72);rb.rightMargin=dp(10);
+                  secondPane.addView(rightAudioBadge,rb);''','áreas de toque')
+          once('''        Button audio=button("♫ 1");audio.setOnClickListener(v->{
+                      setAudible(audiblePane==1?2:1);audio.setText("♫ "+audiblePane);
+                  });''','''        Button audio=button("♫ 1");audioChoiceButton=audio;
+                  audio.setOnClickListener(v->selectAudioPane(audiblePane==1?2:1));''','botão superior')
+          once('''        firstPane.addView(videoSurface,new FrameLayout.LayoutParams(-1,-1));
+                  splitHolder.setVisibility(View.VISIBLE);''','''        firstPane.addView(videoSurface,new FrameLayout.LayoutParams(-1,-1));
+                  // A camada fica por cima do vídeo e captura o toque em toda a metade esquerda.
+                  if(leftTouchArea.getParent() instanceof android.view.ViewGroup)
+                      ((android.view.ViewGroup)leftTouchArea.getParent()).removeView(leftTouchArea);
+                  firstPane.addView(leftTouchArea,new FrameLayout.LayoutParams(-1,-1));
+                  FrameLayout.LayoutParams lb=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.LEFT);
+                  lb.topMargin=dp(72);lb.leftMargin=dp(10);
+                  if(leftAudioBadge.getParent() instanceof android.view.ViewGroup)
+                      ((android.view.ViewGroup)leftAudioBadge.getParent()).removeView(leftAudioBadge);
+                  firstPane.addView(leftAudioBadge,lb);
+                  splitHolder.setVisibility(View.VISIBLE);''','camada esquerda')
+          once('''    private void setAudible(int which){
+                  audiblePane=which;
+                  applyVolume();
+              }''','''    private void selectAudioPane(int which){
+                  if(!splitEnabled)return;
+                  setAudible(which);
+                  showChrome();
+              }
+              private void setAudible(int which){
+                  audiblePane=(which==2?2:1);
+                  applyVolume(); // Obedece ao volume configurado e muta sempre a outra tela.
+                  if(audioChoiceButton!=null)audioChoiceButton.setText("♫ "+audiblePane);
+                  if(leftAudioBadge!=null){
+                      leftAudioBadge.setText(audiblePane==1?"♫ ESQUERDA · ÁUDIO":"ESQUERDA · MUDO");
+                      leftAudioBadge.setBackground(shape(audiblePane==1?0xd20c554e:0xb5222050,12));
+                  }
+                  if(rightAudioBadge!=null){
+                      rightAudioBadge.setText(audiblePane==2?"♫ DIREITA · ÁUDIO":"DIREITA · MUDO");
+                      rightAudioBadge.setBackground(shape(audiblePane==2?0xd20c554e:0xb5222050,12));
+                  }
+              }''','seleção áudio')
+          once('''        selectingSecond=false;splitEnabled=false;stopSecond();secondChannel=null;''','''        selectingSecond=false;splitEnabled=false;stopSecond();secondChannel=null;
+                  if(leftAudioBadge!=null&&leftAudioBadge.getParent()==firstPane)firstPane.removeView(leftAudioBadge);
+                  if(leftTouchArea!=null&&leftTouchArea.getParent()==firstPane)firstPane.removeView(leftTouchArea);''','limpeza esquerda')
+          p.write_text(s,encoding='utf-8')
+          assert all(k in s for k in ('leftTouchArea.setOnClickListener(v->selectAudioPane(1))', 'rightTouchArea.setOnClickListener(v->selectAudioPane(2))','audioChoiceButton.setText("♫ "+audiblePane)','applyVolume(); // Obedece'))
+          print('OK: toque em cada metade troca áudio, mostra seleção e mantém volume de um player apenas.')
+          XENA_AUDIO_PATCH
+          python3 -m py_compile patch_audio_corrigido.py
+          python3 patch_audio_corrigido.py
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          src=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java').read_text()
+          required=(
+             'leftTouchArea.setOnClickListener(v->selectAudioPane(1))',
+             'rightTouchArea.setOnClickListener(v->selectAudioPane(2))',
+             'firstPane.addView(leftTouchArea',
+             'secondPane.addView(rightTouchArea',
+             'audioChoiceButton.setText("♫ "+audiblePane)',
+             'applyVolume(); // Obedece',
+          )
+          for key in required: assert key in src, 'Faltou recurso: '+key
+          print('TOQUE DE AUDIO: implementação presente e verificada nos arquivos Java.')
+          PYVERIFY
+
+      - name: Aplicar audio por toque, brilho e volume por gestos
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_gestos.py <<'XENA_GESTOS_PATCH'
+          #!/usr/bin/env python3
+          """XenaTV 6.9 – um toque escolhe áudio; deslizar ajusta brilho/volume.
+          Aplicar após patch_xenatv_69_integrada.py, patch_player_69.py e patch_audio_toque_CORRIGIDO_69.py.
+          """
+          from pathlib import Path
+          p=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java')
+          s=p.read_text(encoding='utf-8')
+          def once(old,new,label):
+              global s
+              n=s.count(old)
+              if n!=1: raise RuntimeError(f'{label}: esperado 1 ocorrência, encontrado {n}')
+              s=s.replace(old,new,1)
+          
+          # Elimina as etiquetas que atualmente poluem as duas transmissões.
+          once('        secondPane.addView(rightAudioBadge,rb);',
+               '        rightAudioBadge.setVisibility(View.GONE); // Etiqueta ocultada.','etiqueta direita')
+          once('        firstPane.addView(leftAudioBadge,lb);',
+               '        leftAudioBadge.setVisibility(View.GONE); // Etiqueta ocultada.','etiqueta esquerda')
+          
+          once('    private int audiblePane=1;', '''    private int audiblePane=1;
+              private TextView gestureHint;
+              private float gestureStartX,gestureStartY,gestureBrightness;
+              private int gestureStartVolume;
+              private boolean gestureDragging;
+              private final Runnable hideGestureHint=()->{
+                  if(gestureHint!=null)gestureHint.setVisibility(View.GONE);
+              };''','campos para gestos')
+          
+          once('''        tapArea.setOnTouchListener((v,event)->{
+                      if(event.getAction()!=android.view.MotionEvent.ACTION_UP)return true;
+                      long now=android.os.SystemClock.uptimeMillis();
+                      float x=event.getX();
+                      if(now-lastTapAt<340&&Math.abs(x-lastTapX)<dp(95)){
+                          lastTapAt=0;
+                          if(x<v.getWidth()*0.44f)skipSeconds(-10);
+                          else if(x>v.getWidth()*0.56f)skipSeconds(10);
+                          else showChrome();
+                      }else{lastTapAt=now;lastTapX=x;showChrome();}
+                      return true;
+                  });''', '''        tapArea.setOnTouchListener((v,event)->{
+                      int action=event.getActionMasked();
+                      if(action==android.view.MotionEvent.ACTION_DOWN){
+                          gestureStartX=event.getX();gestureStartY=event.getY();
+                          gestureStartVolume=playerVolume;
+                          android.view.WindowManager.LayoutParams attrs=getWindow().getAttributes();
+                          gestureBrightness=attrs.screenBrightness>=0?attrs.screenBrightness:0.55f;
+                          gestureDragging=false;
+                          return true;
+                      }
+                      if(action==android.view.MotionEvent.ACTION_MOVE){
+                          float dy=gestureStartY-event.getY();
+                          float dx=event.getX()-gestureStartX;
+                          if(!gestureDragging && Math.abs(dy)>dp(18) && Math.abs(dy)>Math.abs(dx)*1.2f)
+                              gestureDragging=true;
+                          if(gestureDragging){
+                              float fraction=dy/Math.max(1f,v.getHeight()*0.65f);
+                              if(gestureStartX<v.getWidth()*0.5f){
+                                  float brightness=Math.max(0.04f,Math.min(1f,gestureBrightness+fraction));
+                                  android.view.WindowManager.LayoutParams attrs=getWindow().getAttributes();
+                                  attrs.screenBrightness=brightness;
+                                  getWindow().setAttributes(attrs);
+                                  showGesture("☀ Brilho  "+Math.round(brightness*100)+"%");
+                              }else{
+                                  playerVolume=Math.max(0,Math.min(100,gestureStartVolume+Math.round(fraction*100)));
+                                  applyVolume();
+                                  if(volumeBar!=null)volumeBar.setProgress(playerVolume);
+                                  showGesture("♫ Volume  "+playerVolume+"%");
+                              }
+                          }
+                          return true;
+                      }
+                      if(action==android.view.MotionEvent.ACTION_CANCEL){
+                          gestureDragging=false;
+                          return true;
+                      }
+                      if(action==android.view.MotionEvent.ACTION_UP){
+                          if(gestureDragging){
+                              gestureDragging=false;lastTapAt=0;
+                              return true; // Gestos não trocam o áudio acidentalmente.
+                          }
+                          long now=android.os.SystemClock.uptimeMillis();
+                          float x=event.getX();
+                          if(splitEnabled){
+                              // Tela global sobre o LibVLC recebe o toque: escolhe áudio IMEDIATAMENTE.
+                              selectAudioPane(x<v.getWidth()*0.5f?1:2);
+                              lastTapAt=0;return true;
+                          }
+                          if(now-lastTapAt<340&&Math.abs(x-lastTapX)<dp(95)){
+                              lastTapAt=0;
+                              if(x<v.getWidth()*0.44f)skipSeconds(-10);
+                              else if(x>v.getWidth()*0.56f)skipSeconds(10);
+                              else showChrome();
+                          }else{lastTapAt=now;lastTapX=x;showChrome();}
+                          return true;
+                      }
+                      return true;
+                  });''', 'captura de toque e gestos')
+          
+          once('''        screen.addView(tapArea,new FrameLayout.LayoutParams(-1,-1));''', '''        screen.addView(tapArea,new FrameLayout.LayoutParams(-1,-1));
+                  // Indicador aparece APENAS durante o gesto; não ocupa as laterais permanentemente.
+                  gestureHint=text("",13,WHITE,true);
+                  gestureHint.setPadding(dp(14),dp(9),dp(14),dp(9));
+                  gestureHint.setBackground(shape(0xd91b1d3a,14));
+                  gestureHint.setVisibility(View.GONE);
+                  screen.addView(gestureHint,new FrameLayout.LayoutParams(-2,-2,Gravity.CENTER));''', 'indicador temporário')
+          
+          once('''    private void selectAudioPane(int which){''', '''    private void showGesture(String value){
+                  if(gestureHint==null||screen==null)return;
+                  gestureHint.setText(value);
+                  gestureHint.setVisibility(View.VISIBLE);
+                  screen.removeCallbacks(hideGestureHint);
+                  screen.postDelayed(hideGestureHint,650);
+              }
+              private void selectAudioPane(int which){''', 'helper indicador')
+          
+          once('''        setAudible(which);
+                  showChrome();
+              }
+              private void setAudible''', '''        setAudible(which);
+                  // Toque simples não abre barras nem adiciona etiquetas sobre o vídeo.
+              }
+              private void setAudible''','toque sem poluir')
+          
+          once('''Button split=button("▣ Dupla");split.setOnClickListener(v->{
+                      if(splitEnabled){disableSplit();split.setText("▣ Dupla");}
+                      else{enableSplit();split.setText("✕ Dupla");}''', '''Button split=button("▣ Dividir");split.setOnClickListener(v->{
+                      if(splitEnabled){disableSplit();split.setText("▣ Dividir");}
+                      else{enableSplit();split.setText("✕ Dividir");}''', 'botão Dividir')
+          
+          once('''screen.removeCallbacks(progressTicker);}stopVideo();''', '''screen.removeCallbacks(progressTicker);screen.removeCallbacks(hideGestureHint);}stopVideo();''', 'limpeza do indicador')
+          p.write_text(s,encoding='utf-8')
+          for key in ('selectAudioPane(x<v.getWidth()*0.5f?1:2)', 'attrs.screenBrightness=brightness',
+                      'showGesture("♫ Volume', 'Button split=button("▣ Dividir")'):
+              assert key in s,key
+          print('PATCH OK: áudio por toque, brilho esquerdo, volume direito, sem etiquetas, Dividir.')
+          XENA_GESTOS_PATCH
+          python3 -m py_compile patch_gestos.py
+          python3 patch_gestos.py
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          s=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java').read_text()
+          keys=['selectAudioPane(x<v.getWidth()*0.5f?1:2)', 'attrs.screenBrightness=brightness', 'showGesture("♫ Volume', 'Button split=button("▣ Dividir")', 'rightAudioBadge.setVisibility(View.GONE)', 'leftAudioBadge.setVisibility(View.GONE)']
+          assert all(k in s for k in keys), 'Patch incompleto'
+          print('GESTOS VALIDADOS: toque áudio, deslizar brilho/volume, sem etiquetas.')
+          PYVERIFY
+
+      - name: Aplicar nosso brilho e favoritos invertidos vermelho-sangue
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_xena_neon_favoritos.py <<'XENA_NEON_FAV_PATCH'
+          #!/usr/bin/env python3
+          """Tema XenaTV neon para TV ao Vivo e estrela invertida vermelho-sangue."""
+          from pathlib import Path
+          base=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app')
+          def exact(s,old,new,tag):
+           n=s.count(old)
+           if n!=1:raise RuntimeError(f'{tag}: esperado 1, encontrou {n}')
+           return s.replace(old,new,1)
+          
+          p=base/'LiveTvActivity.java';s=p.read_text()
+          s=exact(s,'private static final int BG=0xff0b0b1c, PANEL=0xff1a2038, WHITE=0xfff3f6fb,','private static final int BG=0xff0b061a, PANEL=0xff170e30, WHITE=0xfff3f6fb,','cores TV')
+          s=exact(s,'MUTED=0xffa9b4c8, MINT=0xffa8e6d0, STROKE=0xff4b5474;','MUTED=0xffc8bbdb, MINT=0xff49ff91, STROKE=0xffb641f5;\n    private static final int BLOOD=0xffb91635;','cores neon TV')
+          s=exact(s,'private GradientDrawable panel(int color,int radius){GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(dp(radius));d.setStroke(dp(1),STROKE);return d;}','''private GradientDrawable panel(int color,int radius){
+                  GradientDrawable d=new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
+                      new int[]{color,0xff241046,0xff091d2a});
+                  d.setCornerRadius(dp(radius));d.setStroke(dp(1),STROKE);return d;
+              }
+              private void neon(android.view.View v,boolean selected){
+                  v.setElevation(dp(selected?9:4));
+              }
+              private void favoriteAppearance(Button star,boolean saved){
+                  star.setRotation(180f); // Sempre de ponta-cabeça, inclusive desligada.
+                  star.setTextColor(saved?BLOOD:WHITE);
+                  GradientDrawable glow=new GradientDrawable();
+                  glow.setColor(saved?0xff390918:0xff190d32);
+                  glow.setCornerRadius(dp(14));
+                  glow.setStroke(dp(saved?2:1),saved?0xffe22d4a:0xffa243e3);
+                  star.setBackground(glow);
+                  star.setElevation(dp(saved?10:4));
+              }''','tema e helper TV')
+          s=exact(s,'if(group.equals(selectedGroup)){b.setBackground(panel(0xff352d5a,12));b.setTextColor(MINT);}','if(group.equals(selectedGroup)){b.setBackground(panel(0xff132d24,12));b.setTextColor(MINT);neon(b,true);}else neon(b,false);','chip TV')
+          s=exact(s,'line.setMinimumHeight(dp(78));line.setBackground(panel(PANEL,13));','line.setMinimumHeight(dp(78));line.setBackground(panel(PANEL,13));neon(line,false);','linhas TV')
+          s=exact(s,'star.setTextSize(25);star.setTextColor(c.favorite?MINT:WHITE);','star.setTextSize(25);favoriteAppearance(star,c.favorite);','favoritos TV init')
+          s=exact(s,'star.setTextColor(wanted?MINT:WHITE);','favoriteAppearance(star,wanted);','favoritos TV toggle')
+          p.write_text(s)
+          
+          p=base/'MainActivity.java';s=p.read_text()
+          s=exact(s,'TextView star=text(ch.favorite?"★":"☆",26,ch.favorite?MINT:WHITE,true);','TextView star=text(ch.favorite?"★":"☆",26,ch.favorite?0xffb91635:WHITE,true);\n        star.setRotation(180f);','main estrela invertida')
+          s=exact(s,'star.setBackground(shape(0xdd1a1a30,0xff6c658c,24));','star.setBackground(shape(ch.favorite?0xff390918:0xdd1a1a30,ch.favorite?0xffe22d4a:0xffa243e3,24));','main fundo estrela')
+          s=exact(s,'star.setTextColor(wanted?MINT:WHITE);','star.setTextColor(wanted?0xffb91635:WHITE);\n                        star.setBackground(shape(wanted?0xff390918:0xdd1a1a30,wanted?0xffe22d4a:0xffa243e3,24));','main toggle estrela')
+          p.write_text(s)
+          print('OK: estrela invertida e vermelho-sangue em TV ao Vivo, cartões e favoritos principais; brilho TV')
+          XENA_NEON_FAV_PATCH
+          python3 -m py_compile patch_xena_neon_favoritos.py
+          python3 patch_xena_neon_favoritos.py
+          python3 - <<'PYCHECK'
+          from pathlib import Path
+          base=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app')
+          live=(base/'LiveTvActivity.java').read_text()
+          main=(base/'MainActivity.java').read_text()
+          assert 'star.setRotation(180f)' in live and 'star.setRotation(180f)' in main
+          assert '0xffb91635' in live and '0xffb91635' in main
+          assert 'STROKE=0xffb641f5' in live
+          print('VALIDADO: favoritos invertidos e vermelho-sangue, neon na TV')
+          PYCHECK
+
+      - name: Corrigir barras, fundo e troca de canal em tela dividida
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_controles_precisos.py <<'XENA_CONTROLES_PATCH'
+          #!/usr/bin/env python3
+          """XenaTV 6.9: toque fora do video alterna barras; dentro seleciona audio;
+          ' Canais' substitui apenas video ativo. Aplicar depois de gestos + favoritos.
+          """
+          from pathlib import Path
+          p=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java')
+          s=p.read_text(encoding='utf-8')
+          def replace_one(old,new,label):
+           global s
+           n=s.count(old)
+           if n!=1: raise RuntimeError(f'{label}: esperado 1 trecho, encontrei {n}')
+           s=s.replace(old,new,1)
+          replace_one('''    private void showChrome(){''','''    private void toggleChrome(){
+                  if(open)return; // Guia aberto: nenhum toque deve fechar os controles inesperadamente.
+                  boolean showing=(controls!=null&&controls.getVisibility()==View.VISIBLE&&controls.getAlpha()>0.5f)
+                      ||(playerBar!=null&&playerBar.getVisibility()==View.VISIBLE&&playerBar.getAlpha()>0.5f);
+                  screen.removeCallbacks(hideChrome);
+                  if(showing)hideChrome.run();else showChrome();
+              }
+              private void showChrome(){''','alternar controles')
+          replace_one('''                if(splitEnabled){
+                              // Tela global sobre o LibVLC recebe o toque: escolhe áudio IMEDIATAMENTE.
+                              selectAudioPane(x<v.getWidth()*0.5f?1:2);
+                              lastTapAt=0;return true;
+                          }''','''                if(splitEnabled){
+                              // Imagem central: audio/tela ativa. Fundo galactico: exibir/ocultar barras.
+                              // Dois videos 16:9 lado a lado; nao confundir o fundo com video.
+                              float videoBand=Math.min(v.getHeight(),v.getWidth()*9f/32f);
+                              float top=(v.getHeight()-videoBand)*0.5f;
+                              float margin=dp(12);
+                              if(event.getY()<top-margin || event.getY()>top+videoBand+margin){
+                                  toggleChrome();
+                              }else{
+                                  selectAudioPane(x<v.getWidth()*0.5f?1:2);
+                              }
+                              lastTapAt=0;return true;
+                          }''','distinguindo video e fundo')
+          replace_one('''                }else{lastTapAt=now;lastTapX=x;showChrome();}''','''                }else{lastTapAt=now;lastTapX=x;toggleChrome();}''','alternar toque simples')
+          replace_one('''        if(selectingSecond){selectingSecond=false;playSecond(item);setGuide(false);return;}
+                  current=item;''','''        if(selectingSecond){selectingSecond=false;playSecond(item);setGuide(false);return;}
+                  // Na Tela Dividida, a escolha do guia muda SOMENTE a tela selecionada.
+                  if(splitEnabled && audiblePane==2){
+                      playSecond(item);
+                      setGuide(false);
+                      return;
+                  }
+                  current=item;''','troca de canal na tela ativa')
+          # prevent phantom overlays of gesture hints and excessive bars on player start
+          p.write_text(s,encoding='utf-8')
+          for key in ('toggleChrome()', 'if(splitEnabled && audiblePane==2)', 'float videoBand=', 'selectAudioPane(x<v.getWidth()*0.5f?1:2)'):
+           assert key in s,key
+          print('OK: fundo alterna TODAS as barras; toque no video seleciona audio; lista troca tela ativa; gestos preservados.')
+          XENA_CONTROLES_PATCH
+          python3 -m py_compile patch_controles_precisos.py
+          python3 patch_controles_precisos.py
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          s=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java').read_text()
+          for key in ('private void toggleChrome()', 'float videoBand=', 'if(splitEnabled && audiblePane==2)', 'rightAudioBadge.setVisibility(View.GONE)', 'leftAudioBadge.setVisibility(View.GONE)', 'attrs.screenBrightness=brightness', 'showGesture("♫ Volume'):
+              assert key in s, f'Recurso não aplicado: {key}'
+          assert s.count('{')==s.count('}'), 'Java com chaves desbalanceadas'
+          print('CONTROLES: toque em fundo alterna barras; video seleciona audio; canal troca apenas na metade ativa')
+          PYVERIFY
+
+      - name: Compilar APK debug para testes
+        working-directory: xena-premium/XenaTV_Android
+        run: gradle --no-daemon --stacktrace assembleDebug
+
+      - name: Publicar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: XenaTV-6-9-FILMES-CORRIGIDOS-V2-APK
+          path: xena-premium/XenaTV_Android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
