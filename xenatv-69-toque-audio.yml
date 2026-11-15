@@ -1,0 +1,190 @@
+name: XenaTV 6.9 - Toque para Escolher Audio
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/xenatv-69-toque-audio.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - name: Baixar arquivos do repositorio
+        uses: actions/checkout@v4
+
+      - name: Verificar pacote, limites e arquivos obrigatorios
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f XenaTV_69_PLAYER_CONTROLES_CODIGO_TESTE.zip
+          test -f XenaTV_Android_LibVLC_Teste1.zip
+          test -f patch_filmes_69.py
+          test -f .github/workflows/xenatv-premium-6-9-revisao-cosmica-pipoou-compacta.yml
+          python3 - <<'PY'
+          from pathlib import Path
+          import zipfile
+          own=Path('.github/workflows/xenatv-69-toque-audio.yml')
+          assert own.stat().st_size < 100_000, 'Workflow muito grande'
+          compact=Path('.github/workflows/xenatv-premium-6-9-revisao-cosmica-pipoou-compacta.yml')
+          assert compact.stat().st_size <= 500_000, 'Base compacta excedeu 500 KB'
+          z=zipfile.ZipFile('XenaTV_69_PLAYER_CONTROLES_CODIGO_TESTE.zip')
+          names=z.namelist()
+          required=['patch_xenatv_69_integrada.py','patch_player_69.py','1000510040.jpg']
+          for item in required:
+              assert names.count(item)==1, f'Arquivo ausente/duplicado: {item}'
+              Path(item).write_bytes(z.read(item))
+          print('Arquivos extraidos, tamanhos conferidos; workflow:',own.stat().st_size,'bytes')
+          PY
+          python3 -m py_compile patch_xenatv_69_integrada.py patch_player_69.py patch_filmes_69.py
+
+      - name: Instalar Java e Android SDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+      - name: Instalar plataforma Android
+        run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Restaurar base 6.9 e preservar correcao de filmes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64,lzma,pathlib,re
+          p=pathlib.Path('.github/workflows/xenatv-premium-6-9-revisao-cosmica-pipoou-compacta.yml')
+          s=p.read_text(encoding='utf-8')
+          m=re.search(r'payload = """\s*(.*?)\s*"""',s,re.S)
+          if not m: raise RuntimeError('Base compacta sem payload')
+          pathlib.Path('xena-build-step.sh').write_bytes(lzma.decompress(base64.b85decode(''.join(m.group(1).split()))))
+          PY
+          python3 patch_filmes_69.py
+          bash xena-build-step.sh
+
+      - name: Integrar icones, tela dupla e controles de video
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet Pillow
+          python3 patch_xenatv_69_integrada.py
+          python3 patch_player_69.py
+          python3 - <<'PY'
+          from pathlib import Path
+          base=Path('xena-premium/XenaTV_Android/app/src/main')
+          player=(base/'java/br/com/xenatv/app/FullScreenPlayerActivity.java').read_text()
+          main=(base/'java/br/com/xenatv/app/MainActivity.java').read_text()
+          for key in ('buildPlayerBar()', 'skipSeconds(-10)', 'skipSeconds(10)', 'playSecond(', 'setAudible('):
+              assert key in player, f'Funcao ausente: {key}'
+          assert 'xenaNavImage(' in main, 'Icones nao aplicados'
+          assert len(list((base/'res/drawable-nodpi').glob('xena_nav_*.png'))) == 9
+          print('INTEGRACAO VALIDADA: controles, tela dupla, 9 icones e filmes anteriores')
+          PY
+
+      - name: Seleção de áudio por toque no vídeo
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_toque_audio_xena69.py <<'XENA_AUDIO_PATCH'
+          #!/usr/bin/env python3
+          """Faz toque em cada metade escolher qual stream LibVLC tem som na XenaTV 6.9.
+          Executar após patch_xenatv_69_integrada.py e patch_player_69.py.
+          """
+          from pathlib import Path
+          p=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java')
+          s=p.read_text(encoding='utf-8')
+          def sub(old,new,name):
+           global s
+           n=s.count(old)
+           if n!=1:raise RuntimeError(f'{name}: esperado um trecho, encontrado {n}')
+           s=s.replace(old,new,1)
+          sub('    private int audiblePane=1;', '''    private int audiblePane=1;
+              private Button audioChoiceButton;
+              private TextView leftAudioBadge,rightAudioBadge;''','campos audio')
+          sub('''        firstPane.setOnClickListener(v->setAudible(1));
+                  secondPane.setOnClickListener(v->setAudible(2));''','''        // A camada de gestos cobre os vídeos: o toque é tratado nela.
+                  firstPane.setOnClickListener(v->selectAudioPane(1));
+                  secondPane.setOnClickListener(v->selectAudioPane(2));
+                  leftAudioBadge=text("🔊 ESQUERDA",11,WHITE,true);
+                  rightAudioBadge=text("DIREITA · SEM SOM",11,WHITE,true);
+                  leftAudioBadge.setBackground(shape(0xd8222050,12));
+                  rightAudioBadge.setBackground(shape(0xb5222050,12));
+                  leftAudioBadge.setPadding(dp(9),dp(5),dp(9),dp(5));
+                  rightAudioBadge.setPadding(dp(9),dp(5),dp(9),dp(5));
+                  FrameLayout.LayoutParams rightBadgeParams=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.RIGHT);
+                  rightBadgeParams.topMargin=dp(72);rightBadgeParams.rightMargin=dp(10);
+                  secondPane.addView(rightAudioBadge,rightBadgeParams);''','badges')
+          sub('''        Button audio=button("♫ 1");audio.setOnClickListener(v->{
+                      setAudible(audiblePane==1?2:1);audio.setText("♫ "+audiblePane);
+                  });''','''        Button audio=button("♫ 1");audioChoiceButton=audio;
+                  audio.setOnClickListener(v->selectAudioPane(audiblePane==1?2:1));''','botao')
+          sub('''        firstPane.addView(videoSurface,new FrameLayout.LayoutParams(-1,-1));
+                  splitHolder.setVisibility(View.VISIBLE);''','''        firstPane.addView(videoSurface,new FrameLayout.LayoutParams(-1,-1));
+                  FrameLayout.LayoutParams leftBadgeParams=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.LEFT);
+                  leftBadgeParams.topMargin=dp(72);leftBadgeParams.leftMargin=dp(10);
+                  firstPane.addView(leftAudioBadge,leftBadgeParams);
+                  splitHolder.setVisibility(View.VISIBLE);''','primeira badge')
+          sub('''    private void setAudible(int which){
+                  audiblePane=which;
+                  applyVolume();
+              }''','''    private void selectAudioPane(int which){
+                  if(!splitEnabled)return;
+                  setAudible(which);
+                  showChrome();
+              }
+              private void setAudible(int which){
+                  audiblePane=which==2?2:1;
+                  // Reutilizar volume configurado; nunca misturar dois áudios.
+                  applyVolume();
+                  if(audioChoiceButton!=null)audioChoiceButton.setText("♫ "+audiblePane);
+                  if(leftAudioBadge!=null){
+                      leftAudioBadge.setText(audiblePane==1?"🔊 ESQUERDA · ÁUDIO":"ESQUERDA · SEM SOM");
+                      leftAudioBadge.setBackground(shape(audiblePane==1?0xdd0c554e:0xb5222050,12));
+                  }
+                  if(rightAudioBadge!=null){
+                      rightAudioBadge.setText(audiblePane==2?"🔊 DIREITA · ÁUDIO":"DIREITA · SEM SOM");
+                      rightAudioBadge.setBackground(shape(audiblePane==2?0xdd0c554e:0xb5222050,12));
+                  }
+              }''','selecao e foco')
+          sub('''            if(event.getAction()!=android.view.MotionEvent.ACTION_UP)return true;
+                      long now=android.os.SystemClock.uptimeMillis();''','''            if(event.getAction()!=android.view.MotionEvent.ACTION_UP)return true;
+                      if(splitEnabled){
+                          // A camada de gestos fica sobre ambos os vídeos: usar a posição real do toque.
+                          selectAudioPane(event.getX()<v.getWidth()/2f?1:2);
+                          lastTapAt=0;
+                          return true;
+                      }
+                      long now=android.os.SystemClock.uptimeMillis();''','gesto toque')
+          sub('''        selectingSecond=false;splitEnabled=false;stopSecond();secondChannel=null;''','''        selectingSecond=false;splitEnabled=false;stopSecond();secondChannel=null;
+                  if(leftAudioBadge!=null && leftAudioBadge.getParent()==firstPane)firstPane.removeView(leftAudioBadge);''','limpeza')
+          p.write_text(s,encoding='utf-8')
+          print('OK: toque na metade esquerda/direita troca áudio, com destaque claro e apenas uma saída audível.')
+          XENA_AUDIO_PATCH
+          python3 patch_toque_audio_xena69.py
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          s=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java').read_text()
+          for k in ('selectAudioPane(event.getX()<v.getWidth()/2f?1:2)', 'DIREITA · SEM SOM', 'applyVolume()', 'audioChoiceButton.setText'):
+              assert k in s, 'Recurso ausente: '+k
+          print('Seleção de áudio integrada e verificada.')
+          PYVERIFY
+
+      - name: Compilar APK debug para testes
+        working-directory: xena-premium/XenaTV_Android
+        run: gradle --no-daemon --stacktrace assembleDebug
+
+      - name: Publicar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: XenaTV-6-9-TOQUE-AUDIO-APK
+          path: xena-premium/XenaTV_Android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
