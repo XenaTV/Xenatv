@@ -1,0 +1,1661 @@
+name: XenaTV 6.9 - V6 Resgate Filmes Xtream - REPARADO
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/xenatv-69-V6-RESGATE-FILMES-XTREAM-REPARADO.yml'
+      - 'patch_xenatv_dupla_bordas_neon.py'
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - name: Baixar arquivos do repositorio
+        uses: actions/checkout@v4
+
+      - name: Verificar pacote, limites e arquivos obrigatorios
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A base compacta esta na RAIZ do repositorio (nao em workflows).
+          # Fazer uma copia apenas no runner para os scripts antigos a encontrarem.
+          BASE="xenatv-premium-6-9-revisao-cosmica-pipoou-compacta.yml"
+          DEST=".github/workflows/$BASE"
+          for required in XenaTV_69_PLAYER_CONTROLES_CODIGO_TESTE.zip XenaTV_Android_LibVLC_Teste1.zip patch_filmes_69.py; do
+            if [ ! -f "$required" ]; then
+              echo "::error title=Arquivo ausente::Falta $required na raiz do repositorio"
+              exit 1
+            fi
+          done
+          if [ ! -f "$DEST" ]; then
+            if [ -f "$BASE" ]; then
+              echo "Base localizada na raiz; copiando para o caminho esperado pelo build."
+              mkdir -p .github/workflows
+              cp "$BASE" "$DEST"
+            else
+              echo "::error title=Base 6.9 ausente::O arquivo $BASE nao existe na raiz nem em .github/workflows"
+              exit 1
+            fi
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          import zipfile
+          own=Path('.github/workflows/xenatv-69-V6-RESGATE-FILMES-XTREAM-REPARADO.yml')
+          if not own.exists(): raise RuntimeError('Workflow deve estar em .github/workflows/ e NÃO na raiz do repositório')
+          assert own.stat().st_size < 500_000, 'Workflow muito grande'
+          compact=Path('.github/workflows/xenatv-premium-6-9-revisao-cosmica-pipoou-compacta.yml')
+          assert compact.stat().st_size <= 500_000, 'Base compacta excedeu 500 KB'
+          z=zipfile.ZipFile('XenaTV_69_PLAYER_CONTROLES_CODIGO_TESTE.zip')
+          names=z.namelist()
+          required=['patch_xenatv_69_integrada.py','patch_player_69.py','1000510040.jpg']
+          for item in required:
+              assert names.count(item)==1, f'Arquivo ausente/duplicado: {item}'
+              Path(item).write_bytes(z.read(item))
+          print('Arquivos extraidos, tamanhos conferidos; workflow:',own.stat().st_size,'bytes')
+          PY
+          python3 -m py_compile patch_xenatv_69_integrada.py patch_player_69.py patch_filmes_69.py
+
+      - name: Instalar Java e Android SDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+      - name: Instalar plataforma Android
+        run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Restaurar base 6.9 e preservar correcao de filmes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64,lzma,pathlib,re
+          p=pathlib.Path('.github/workflows/xenatv-premium-6-9-revisao-cosmica-pipoou-compacta.yml')
+          s=p.read_text(encoding='utf-8')
+          m=re.search(r'payload = """\s*(.*?)\s*"""',s,re.S)
+          if not m: raise RuntimeError('Base compacta sem payload')
+          pathlib.Path('xena-build-step.sh').write_bytes(lzma.decompress(base64.b85decode(''.join(m.group(1).split()))))
+          PY
+          python3 patch_filmes_69.py
+          # Corrigir somente sincronizacao de FILMES; manter series, TV e favoritos intactos.
+          cat > patch_vod_filmes_v2.py <<'XENA_FILMES_PATCH_V2'
+          #!/usr/bin/env python3
+          """Correção incremental: VOD Xtream separado da TV e das séries.
+          Aplica no xena-build-step.sh APÓS patch_filmes_69.py e ANTES do bash.
+          Não reescreve série, não remove TV, não lê credenciais fora do aparelho.
+          """
+          from pathlib import Path
+          p = Path('xena-build-step.sh')
+          s = p.read_text(encoding='utf-8')
+          
+          def inject(anchor: str, addition: str, label: str):
+              global s
+              n=s.count(anchor)
+              if n!=1: raise RuntimeError(f'{label}: esperado exatamente 1 ponto, encontrado {n}')
+              s=s.replace(anchor,addition+anchor,1)
+          
+          def rep(old: str,new: str,label: str):
+              global s
+              n=s.count(old)
+              if n!=1: raise RuntimeError(f'{label}: trecho original mudou ({n} ocorrências)')
+              s=s.replace(old,new,1)
+          
+          # 1) Xtream: consultar get_vod_streams mesmo quando a lista M3U de TV já retornou dados.
+          # As categorias são devolvidas pelo fornecedor: não inventar associação Netflix/Prime/etc.
+          method = r'''    /** Importação EXCLUSIVA de filmes da fonte Xtream; TV/séries intocadas. */
+              public static ArrayList<M3UStreamParser.Channel> moviesOnly(String source) throws IOException {
+                  Account a=account(source);
+                  Map<String,String> categories=categories(a,"get_vod_categories");
+                  JSONArray movies=array(a,"get_vod_streams");
+                  String user=URLEncoder.encode(a.user,"UTF-8"),pass=URLEncoder.encode(a.password,"UTF-8");
+                  ArrayList<M3UStreamParser.Channel> out=new ArrayList<>();
+                  for(int i=0;i<movies.length()&&out.size()<M3UStreamParser.MAX_CHANNELS;i++){
+                      JSONObject m=movies.optJSONObject(i);if(m==null)continue;
+                      String id=m.optString("stream_id","");
+                      if(!id.matches("[0-9]+"))continue;
+                      String extension=safeExt(m.optString("container_extension","mp4"));
+                      String name=m.optString("name","Filme "+id);
+                      String group="Filmes • "+categories.getOrDefault(m.optString("category_id",""),"Sem categoria");
+                      String cover=m.optString("stream_icon","");
+                      String url=a.base+"movie/"+user+"/"+pass+"/"+id+"."+extension;
+                      out.add(new M3UStreamParser.Channel(name,url,group,cover));
+                  }
+                  return out;
+              }
+          '''
+          inject('    /** Consulta apenas séries. Não depende de importar nem sobrescreve os canais ao vivo. */',method,'XtreamCatalog.moviesOnly')
+          
+          # 2) SQLite: upsert por URL de vídeo, preservando todos os registros de séries e TV.
+          method = r'''    /** Importa/atualiza APENAS filmes Xtream, sem substituir TV/séries/favoritos. */
+              public int mergeMovies(List<M3UStreamParser.Channel> films){
+                  SQLiteDatabase db=getWritableDatabase();
+                  db.beginTransaction();
+                  int count=0;
+                  try{
+                      db.execSQL("CREATE INDEX IF NOT EXISTS idx_xena_movie_address ON channels(address)");
+                      android.content.ContentValues row=new android.content.ContentValues();
+                      for(M3UStreamParser.Channel c:films){
+                          if(c.url==null||!c.url.contains("/movie/"))continue;
+                          row.clear();
+                          row.put("title",c.name==null?"Filme":c.name);
+                          row.put("address",c.url);
+                          row.put("category",c.category==null?"Filmes • Sem categoria":c.category);
+                          row.put("logo",c.logo==null?"":c.logo);
+                          row.put("kind","Filmes");
+                          int changed=db.update("channels",row,"address=? AND kind<>'Séries'",new String[]{c.url});
+                          if(changed==0){
+                              // A fonte Xtream fornece IDs VOD; uma URL de série nunca é reutilizada.
+                              if(db.insert("channels",null,row)<0)throw new android.database.SQLException("Falha ao gravar filme");
+                          }
+                          count++;
+                      }
+                      db.setTransactionSuccessful();
+                  }finally{db.endTransaction();}
+                  return count;
+              }
+          '''
+          inject('    /** Altera apenas alternativas da mesma fonte. Sem senhas publicadas no projeto. */',method,'ChannelStore.mergeMovies')
+          
+          # 3) Interface: botão explícito para refazer sync e fluxo automático uma vez por dia.
+          old = '''        if(MOVIES.equals(kind)){
+                      Button link=button("⚙  Associar categorias de filmes das minhas listas",false);'''
+          new = '''        if(MOVIES.equals(kind)){
+                      Button update=button("↻ Sincronizar filmes das minhas listas",false);
+                      body.addView(update,lp(-1,48));gap(body,8);
+                      update.setOnClickListener(v->{
+                          // Somente o cache da sincronização de FILMES é invalidado.
+                          getSharedPreferences("xena_vod_sync_v2",MODE_PRIVATE).edit().clear().apply();
+                          ++platformRevision;renderBody();
+                      });
+                      Button link=button("⚙  Associar categorias de filmes das minhas listas",false);'''
+          rep(old,new,'Botão sincronizar filmes')
+          
+          # Injetar dentro do worker de plataforma, não na importação principal. Assim mesmo
+          # quem já importou M3U e tem 210 séries agora recupera seus filmes automaticamente.
+          old = '''                sources++;
+                          ChannelStore db=null;
+                          try{
+                              db=new ChannelStore(this,src.id);
+                              // Categorias reais da IPTV + vinculos locais escolhidos pelo usuário.'''
+          new = '''                sources++;
+                          ChannelStore db=null;
+                          try{
+                              db=new ChannelStore(this,src.id);
+                              if(MOVIES.equals(kind)&&XtreamCatalog.supports(src.url)){
+                                  android.content.SharedPreferences syncPrefs=getSharedPreferences("xena_vod_sync_v2",MODE_PRIVATE);
+                                  long last=syncPrefs.getLong(src.id,0L);
+                                  if((last==0L||System.currentTimeMillis()-last>12L*60*60*1000)
+                                      && System.currentTimeMillis()>=syncPrefs.getLong(src.id+"_retry",0L)){
+                                      try{
+                                          // Fonte acessada só no aparelho. A API falhar não apaga o catálogo.
+                                          ArrayList<M3UStreamParser.Channel> fresh=XtreamCatalog.moviesOnly(src.url);
+                                          if(!fresh.isEmpty())db.mergeMovies(fresh);
+                                          syncPrefs.edit().putLong(src.id,System.currentTimeMillis()).remove(src.id+"_retry").apply();
+                                      }catch(Exception ex){
+                                          syncPrefs.edit().putLong(src.id+"_retry",System.currentTimeMillis()+10L*60*1000).apply();
+                                          android.util.Log.w("XenaMovies", "API VOD indisponível para esta fonte: "+ex.getClass().getSimpleName());
+                                      }
+                                  }
+                              }
+                              // Categorias reais da IPTV + vinculos locais escolhidos pelo usuário.'''
+          rep(old,new,'Sync automático por fonte antes do catálogo')
+          
+          # Não carregar milhares de objetos simultaneamente: já existe "Mostrar mais títulos".
+          # Limite antigo de 210 por grupo se mantém apenas para séries, intocadas pelo patch.
+          rep('int cap=Math.min(group.count,210);',
+              'int cap=MOVIES.equals(kind)?Math.min(group.count,3000):Math.min(group.count,210);',
+              'Paginação do catálogo de filmes')
+          rep('''                        if(result.size()>800)break;
+                              }
+                          }catch(Exception ignored)''', '''                        if(result.size()>(MOVIES.equals(kind)?12000:800))break;
+                              }
+                          }catch(Exception ignored)''', 'Limite de resultados na categoria')
+          rep('''                if(result.size()>800)break;
+                      }
+                      final int countSources''',
+              '''                if(result.size()>(MOVIES.equals(kind)?12000:800))break;
+                      }
+                      final int countSources''',
+              'Limite global de resultados')
+          
+          # 4) Uma categoria explicitamente nomeada por outra plataforma nunca pode vazar
+          # para a página errada devido a um vínculo manual antigo.
+          rep('return PlatformShortcutRules.matches(platform,category)\n            ||(linked!=null&&linked.contains(key(sourceId,category)));','String detected=CategoryIconRules.brand(category);\n        if(detected!=null&&!detected.isEmpty())return PlatformShortcutRules.matches(platform,category);\n        return linked!=null&&linked.contains(key(sourceId,category));','Validação de plataforma nomeada')
+          
+          # Categorias de outra plataforma não aparecem como opção para associação incorreta.
+          rep('if(PlatformShortcutRules.matches(brand,group.title))continue;\n                        keys.add','if(!CategoryIconRules.brand(group.title).isEmpty())continue;\n                        keys.add','Não misturar categorias de plataformas')
+          
+          # 4) A sincronização manual deve listar também grupos antes classificados como TV com VOD.
+          rep('for(ChannelStore.Group group:db.allCategories(MOVIES)){',
+              'for(ChannelStore.Group group:db.allMovieCategories()){',
+              'Associação manual de filmes')
+          
+          assert 'db.allMovieCategories()' in s  # criado pelo patch_filmes_69.py
+          p.write_text(s,encoding='utf-8')
+          print('OK: VOD separado de M3U e séries; sincronização automática/manual; mapeamento fiel às categorias IPTV.')
+          XENA_FILMES_PATCH_V2
+          python3 -m py_compile patch_vod_filmes_v2.py
+          python3 patch_vod_filmes_v2.py
+          bash xena-build-step.sh
+
+      - name: Integrar icones, tela dupla e controles de video
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet Pillow
+          python3 patch_xenatv_69_integrada.py
+          python3 patch_player_69.py
+          python3 - <<'PY'
+          from pathlib import Path
+          base=Path('xena-premium/XenaTV_Android/app/src/main')
+          player=(base/'java/br/com/xenatv/app/FullScreenPlayerActivity.java').read_text()
+          main=(base/'java/br/com/xenatv/app/MainActivity.java').read_text()
+          for key in ('buildPlayerBar()', 'skipSeconds(-10)', 'skipSeconds(10)', 'playSecond(', 'setAudible('):
+              assert key in player, f'Funcao ausente: {key}'
+          assert 'xenaNavImage(' in main, 'Icones nao aplicados'
+          assert len(list((base/'res/drawable-nodpi').glob('xena_nav_*.png'))) == 9
+          print('INTEGRACAO VALIDADA: controles, tela dupla, 9 icones e filmes anteriores')
+          PY
+
+      - name: Corrigir toque e áudio das duas telas
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_audio_corrigido.py <<'XENA_AUDIO_PATCH'
+          #!/usr/bin/env python3
+          """XenaTV 6.9: selecionar áudio tocando em cada vídeo da Tela Dividida.
+          Aplicar após patch_xenatv_69_integrada.py e patch_player_69.py.
+          """
+          from pathlib import Path
+          p=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java')
+          s=p.read_text(encoding='utf-8')
+          def once(old,new,label):
+              global s
+              n=s.count(old)
+              if n!=1: raise RuntimeError(f'{label}: esperado 1 trecho, encontrados {n}')
+              s=s.replace(old,new,1)
+          
+          once('    private int audiblePane=1;', '''    private int audiblePane=1;
+              private Button audioChoiceButton;
+              private TextView leftAudioBadge,rightAudioBadge;
+              private View leftTouchArea,rightTouchArea;''','campos')
+          once('''        firstPane.setOnClickListener(v->setAudible(1));
+                  secondPane.setOnClickListener(v->setAudible(2));''','''        // Superfícies VLC podem consumir toques; camadas transparentes ficam por cima delas.
+                  leftTouchArea=new View(this);leftTouchArea.setClickable(true);
+                  rightTouchArea=new View(this);rightTouchArea.setClickable(true);
+                  leftTouchArea.setOnClickListener(v->selectAudioPane(1));
+                  rightTouchArea.setOnClickListener(v->selectAudioPane(2));
+                  secondPane.addView(rightTouchArea,new FrameLayout.LayoutParams(-1,-1));
+                  leftAudioBadge=text("♫ ESQUERDA",11,WHITE,true);
+                  rightAudioBadge=text("DIREITA · MUDO",11,WHITE,true);
+                  leftAudioBadge.setPadding(dp(10),dp(5),dp(10),dp(5));
+                  rightAudioBadge.setPadding(dp(10),dp(5),dp(10),dp(5));
+                  FrameLayout.LayoutParams rb=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.RIGHT);
+                  rb.topMargin=dp(72);rb.rightMargin=dp(10);
+                  secondPane.addView(rightAudioBadge,rb);''','áreas de toque')
+          once('''        Button audio=button("♫ 1");audio.setOnClickListener(v->{
+                      setAudible(audiblePane==1?2:1);audio.setText("♫ "+audiblePane);
+                  });''','''        Button audio=button("♫ 1");audioChoiceButton=audio;
+                  audio.setOnClickListener(v->selectAudioPane(audiblePane==1?2:1));''','botão superior')
+          once('''        firstPane.addView(videoSurface,new FrameLayout.LayoutParams(-1,-1));
+                  splitHolder.setVisibility(View.VISIBLE);''','''        firstPane.addView(videoSurface,new FrameLayout.LayoutParams(-1,-1));
+                  // A camada fica por cima do vídeo e captura o toque em toda a metade esquerda.
+                  if(leftTouchArea.getParent() instanceof android.view.ViewGroup)
+                      ((android.view.ViewGroup)leftTouchArea.getParent()).removeView(leftTouchArea);
+                  firstPane.addView(leftTouchArea,new FrameLayout.LayoutParams(-1,-1));
+                  FrameLayout.LayoutParams lb=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.LEFT);
+                  lb.topMargin=dp(72);lb.leftMargin=dp(10);
+                  if(leftAudioBadge.getParent() instanceof android.view.ViewGroup)
+                      ((android.view.ViewGroup)leftAudioBadge.getParent()).removeView(leftAudioBadge);
+                  firstPane.addView(leftAudioBadge,lb);
+                  splitHolder.setVisibility(View.VISIBLE);''','camada esquerda')
+          once('''    private void setAudible(int which){
+                  audiblePane=which;
+                  applyVolume();
+              }''','''    private void selectAudioPane(int which){
+                  if(!splitEnabled)return;
+                  setAudible(which);
+                  showChrome();
+              }
+              private void setAudible(int which){
+                  audiblePane=(which==2?2:1);
+                  applyVolume(); // Obedece ao volume configurado e muta sempre a outra tela.
+                  if(audioChoiceButton!=null)audioChoiceButton.setText("♫ "+audiblePane);
+                  if(leftAudioBadge!=null){
+                      leftAudioBadge.setText(audiblePane==1?"♫ ESQUERDA · ÁUDIO":"ESQUERDA · MUDO");
+                      leftAudioBadge.setBackground(shape(audiblePane==1?0xd20c554e:0xb5222050,12));
+                  }
+                  if(rightAudioBadge!=null){
+                      rightAudioBadge.setText(audiblePane==2?"♫ DIREITA · ÁUDIO":"DIREITA · MUDO");
+                      rightAudioBadge.setBackground(shape(audiblePane==2?0xd20c554e:0xb5222050,12));
+                  }
+              }''','seleção áudio')
+          once('''        selectingSecond=false;splitEnabled=false;stopSecond();secondChannel=null;''','''        selectingSecond=false;splitEnabled=false;stopSecond();secondChannel=null;
+                  if(leftAudioBadge!=null&&leftAudioBadge.getParent()==firstPane)firstPane.removeView(leftAudioBadge);
+                  if(leftTouchArea!=null&&leftTouchArea.getParent()==firstPane)firstPane.removeView(leftTouchArea);''','limpeza esquerda')
+          p.write_text(s,encoding='utf-8')
+          assert all(k in s for k in ('leftTouchArea.setOnClickListener(v->selectAudioPane(1))', 'rightTouchArea.setOnClickListener(v->selectAudioPane(2))','audioChoiceButton.setText("♫ "+audiblePane)','applyVolume(); // Obedece'))
+          print('OK: toque em cada metade troca áudio, mostra seleção e mantém volume de um player apenas.')
+          XENA_AUDIO_PATCH
+          python3 -m py_compile patch_audio_corrigido.py
+          python3 patch_audio_corrigido.py
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          src=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java').read_text()
+          required=(
+             'leftTouchArea.setOnClickListener(v->selectAudioPane(1))',
+             'rightTouchArea.setOnClickListener(v->selectAudioPane(2))',
+             'firstPane.addView(leftTouchArea',
+             'secondPane.addView(rightTouchArea',
+             'audioChoiceButton.setText("♫ "+audiblePane)',
+             'applyVolume(); // Obedece',
+          )
+          for key in required: assert key in src, 'Faltou recurso: '+key
+          print('TOQUE DE AUDIO: implementação presente e verificada nos arquivos Java.')
+          PYVERIFY
+
+      - name: Aplicar audio por toque, brilho e volume por gestos
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_gestos.py <<'XENA_GESTOS_PATCH'
+          #!/usr/bin/env python3
+          """XenaTV 6.9 – um toque escolhe áudio; deslizar ajusta brilho/volume.
+          Aplicar após patch_xenatv_69_integrada.py, patch_player_69.py e patch_audio_toque_CORRIGIDO_69.py.
+          """
+          from pathlib import Path
+          p=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java')
+          s=p.read_text(encoding='utf-8')
+          def once(old,new,label):
+              global s
+              n=s.count(old)
+              if n!=1: raise RuntimeError(f'{label}: esperado 1 ocorrência, encontrado {n}')
+              s=s.replace(old,new,1)
+          
+          # Elimina as etiquetas que atualmente poluem as duas transmissões.
+          once('        secondPane.addView(rightAudioBadge,rb);',
+               '        rightAudioBadge.setVisibility(View.GONE); // Etiqueta ocultada.','etiqueta direita')
+          once('        firstPane.addView(leftAudioBadge,lb);',
+               '        leftAudioBadge.setVisibility(View.GONE); // Etiqueta ocultada.','etiqueta esquerda')
+          
+          once('    private int audiblePane=1;', '''    private int audiblePane=1;
+              private TextView gestureHint;
+              private float gestureStartX,gestureStartY,gestureBrightness;
+              private int gestureStartVolume;
+              private boolean gestureDragging;
+              private final Runnable hideGestureHint=()->{
+                  if(gestureHint!=null)gestureHint.setVisibility(View.GONE);
+              };''','campos para gestos')
+          
+          once('''        tapArea.setOnTouchListener((v,event)->{
+                      if(event.getAction()!=android.view.MotionEvent.ACTION_UP)return true;
+                      long now=android.os.SystemClock.uptimeMillis();
+                      float x=event.getX();
+                      if(now-lastTapAt<340&&Math.abs(x-lastTapX)<dp(95)){
+                          lastTapAt=0;
+                          if(x<v.getWidth()*0.44f)skipSeconds(-10);
+                          else if(x>v.getWidth()*0.56f)skipSeconds(10);
+                          else showChrome();
+                      }else{lastTapAt=now;lastTapX=x;showChrome();}
+                      return true;
+                  });''', '''        tapArea.setOnTouchListener((v,event)->{
+                      int action=event.getActionMasked();
+                      if(action==android.view.MotionEvent.ACTION_DOWN){
+                          gestureStartX=event.getX();gestureStartY=event.getY();
+                          gestureStartVolume=playerVolume;
+                          android.view.WindowManager.LayoutParams attrs=getWindow().getAttributes();
+                          gestureBrightness=attrs.screenBrightness>=0?attrs.screenBrightness:0.55f;
+                          gestureDragging=false;
+                          return true;
+                      }
+                      if(action==android.view.MotionEvent.ACTION_MOVE){
+                          float dy=gestureStartY-event.getY();
+                          float dx=event.getX()-gestureStartX;
+                          if(!gestureDragging && Math.abs(dy)>dp(18) && Math.abs(dy)>Math.abs(dx)*1.2f)
+                              gestureDragging=true;
+                          if(gestureDragging){
+                              float fraction=dy/Math.max(1f,v.getHeight()*0.65f);
+                              if(gestureStartX<v.getWidth()*0.5f){
+                                  float brightness=Math.max(0.04f,Math.min(1f,gestureBrightness+fraction));
+                                  android.view.WindowManager.LayoutParams attrs=getWindow().getAttributes();
+                                  attrs.screenBrightness=brightness;
+                                  getWindow().setAttributes(attrs);
+                                  showGesture("☀ Brilho  "+Math.round(brightness*100)+"%");
+                              }else{
+                                  playerVolume=Math.max(0,Math.min(100,gestureStartVolume+Math.round(fraction*100)));
+                                  applyVolume();
+                                  if(volumeBar!=null)volumeBar.setProgress(playerVolume);
+                                  showGesture("♫ Volume  "+playerVolume+"%");
+                              }
+                          }
+                          return true;
+                      }
+                      if(action==android.view.MotionEvent.ACTION_CANCEL){
+                          gestureDragging=false;
+                          return true;
+                      }
+                      if(action==android.view.MotionEvent.ACTION_UP){
+                          if(gestureDragging){
+                              gestureDragging=false;lastTapAt=0;
+                              return true; // Gestos não trocam o áudio acidentalmente.
+                          }
+                          long now=android.os.SystemClock.uptimeMillis();
+                          float x=event.getX();
+                          if(splitEnabled){
+                              // Tela global sobre o LibVLC recebe o toque: escolhe áudio IMEDIATAMENTE.
+                              selectAudioPane(x<v.getWidth()*0.5f?1:2);
+                              lastTapAt=0;return true;
+                          }
+                          if(now-lastTapAt<340&&Math.abs(x-lastTapX)<dp(95)){
+                              lastTapAt=0;
+                              if(x<v.getWidth()*0.44f)skipSeconds(-10);
+                              else if(x>v.getWidth()*0.56f)skipSeconds(10);
+                              else showChrome();
+                          }else{lastTapAt=now;lastTapX=x;showChrome();}
+                          return true;
+                      }
+                      return true;
+                  });''', 'captura de toque e gestos')
+          
+          once('''        screen.addView(tapArea,new FrameLayout.LayoutParams(-1,-1));''', '''        screen.addView(tapArea,new FrameLayout.LayoutParams(-1,-1));
+                  // Indicador aparece APENAS durante o gesto; não ocupa as laterais permanentemente.
+                  gestureHint=text("",13,WHITE,true);
+                  gestureHint.setPadding(dp(14),dp(9),dp(14),dp(9));
+                  gestureHint.setBackground(shape(0xd91b1d3a,14));
+                  gestureHint.setVisibility(View.GONE);
+                  screen.addView(gestureHint,new FrameLayout.LayoutParams(-2,-2,Gravity.CENTER));''', 'indicador temporário')
+          
+          once('''    private void selectAudioPane(int which){''', '''    private void showGesture(String value){
+                  if(gestureHint==null||screen==null)return;
+                  gestureHint.setText(value);
+                  gestureHint.setVisibility(View.VISIBLE);
+                  screen.removeCallbacks(hideGestureHint);
+                  screen.postDelayed(hideGestureHint,650);
+              }
+              private void selectAudioPane(int which){''', 'helper indicador')
+          
+          once('''        setAudible(which);
+                  showChrome();
+              }
+              private void setAudible''', '''        setAudible(which);
+                  // Toque simples não abre barras nem adiciona etiquetas sobre o vídeo.
+              }
+              private void setAudible''','toque sem poluir')
+          
+          once('''Button split=button("▣ Dupla");split.setOnClickListener(v->{
+                      if(splitEnabled){disableSplit();split.setText("▣ Dupla");}
+                      else{enableSplit();split.setText("✕ Dupla");}''', '''Button split=button("▣ Dividir");split.setOnClickListener(v->{
+                      if(splitEnabled){disableSplit();split.setText("▣ Dividir");}
+                      else{enableSplit();split.setText("✕ Dividir");}''', 'botão Dividir')
+          
+          once('''screen.removeCallbacks(progressTicker);}stopVideo();''', '''screen.removeCallbacks(progressTicker);screen.removeCallbacks(hideGestureHint);}stopVideo();''', 'limpeza do indicador')
+          p.write_text(s,encoding='utf-8')
+          for key in ('selectAudioPane(x<v.getWidth()*0.5f?1:2)', 'attrs.screenBrightness=brightness',
+                      'showGesture("♫ Volume', 'Button split=button("▣ Dividir")'):
+              assert key in s,key
+          print('PATCH OK: áudio por toque, brilho esquerdo, volume direito, sem etiquetas, Dividir.')
+          XENA_GESTOS_PATCH
+          python3 -m py_compile patch_gestos.py
+          python3 patch_gestos.py
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          s=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java').read_text()
+          keys=['selectAudioPane(x<v.getWidth()*0.5f?1:2)', 'attrs.screenBrightness=brightness', 'showGesture("♫ Volume', 'Button split=button("▣ Dividir")', 'rightAudioBadge.setVisibility(View.GONE)', 'leftAudioBadge.setVisibility(View.GONE)']
+          assert all(k in s for k in keys), 'Patch incompleto'
+          print('GESTOS VALIDADOS: toque áudio, deslizar brilho/volume, sem etiquetas.')
+          PYVERIFY
+
+      - name: Aplicar nosso brilho e favoritos invertidos vermelho-sangue
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_xena_neon_favoritos.py <<'XENA_NEON_FAV_PATCH'
+          #!/usr/bin/env python3
+          """Tema XenaTV neon para TV ao Vivo e estrela invertida vermelho-sangue."""
+          from pathlib import Path
+          base=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app')
+          def exact(s,old,new,tag):
+           n=s.count(old)
+           if n!=1:raise RuntimeError(f'{tag}: esperado 1, encontrou {n}')
+           return s.replace(old,new,1)
+          
+          p=base/'LiveTvActivity.java';s=p.read_text()
+          s=exact(s,'private static final int BG=0xff0b0b1c, PANEL=0xff1a2038, WHITE=0xfff3f6fb,','private static final int BG=0xff0b061a, PANEL=0xff170e30, WHITE=0xfff3f6fb,','cores TV')
+          s=exact(s,'MUTED=0xffa9b4c8, MINT=0xffa8e6d0, STROKE=0xff4b5474;','MUTED=0xffc8bbdb, MINT=0xff49ff91, STROKE=0xffb641f5;\n    private static final int BLOOD=0xffb91635;','cores neon TV')
+          s=exact(s,'private GradientDrawable panel(int color,int radius){GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(dp(radius));d.setStroke(dp(1),STROKE);return d;}','''private GradientDrawable panel(int color,int radius){
+                  GradientDrawable d=new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
+                      new int[]{color,0xff241046,0xff091d2a});
+                  d.setCornerRadius(dp(radius));d.setStroke(dp(1),STROKE);return d;
+              }
+              private void neon(android.view.View v,boolean selected){
+                  v.setElevation(dp(selected?9:4));
+              }
+              private void favoriteAppearance(Button star,boolean saved){
+                  star.setRotation(180f); // Sempre de ponta-cabeça, inclusive desligada.
+                  star.setTextColor(saved?BLOOD:WHITE);
+                  GradientDrawable glow=new GradientDrawable();
+                  glow.setColor(saved?0xff390918:0xff190d32);
+                  glow.setCornerRadius(dp(14));
+                  glow.setStroke(dp(saved?2:1),saved?0xffe22d4a:0xffa243e3);
+                  star.setBackground(glow);
+                  star.setElevation(dp(saved?10:4));
+              }''','tema e helper TV')
+          s=exact(s,'if(group.equals(selectedGroup)){b.setBackground(panel(0xff352d5a,12));b.setTextColor(MINT);}','if(group.equals(selectedGroup)){b.setBackground(panel(0xff132d24,12));b.setTextColor(MINT);neon(b,true);}else neon(b,false);','chip TV')
+          s=exact(s,'line.setMinimumHeight(dp(78));line.setBackground(panel(PANEL,13));','line.setMinimumHeight(dp(78));line.setBackground(panel(PANEL,13));neon(line,false);','linhas TV')
+          s=exact(s,'star.setTextSize(25);star.setTextColor(c.favorite?MINT:WHITE);','star.setTextSize(25);favoriteAppearance(star,c.favorite);','favoritos TV init')
+          s=exact(s,'star.setTextColor(wanted?MINT:WHITE);','favoriteAppearance(star,wanted);','favoritos TV toggle')
+          p.write_text(s)
+          
+          p=base/'MainActivity.java';s=p.read_text()
+          s=exact(s,'TextView star=text(ch.favorite?"★":"☆",26,ch.favorite?MINT:WHITE,true);','TextView star=text(ch.favorite?"★":"☆",26,ch.favorite?0xffb91635:WHITE,true);\n        star.setRotation(180f);','main estrela invertida')
+          s=exact(s,'star.setBackground(shape(0xdd1a1a30,0xff6c658c,24));','star.setBackground(shape(ch.favorite?0xff390918:0xdd1a1a30,ch.favorite?0xffe22d4a:0xffa243e3,24));','main fundo estrela')
+          s=exact(s,'star.setTextColor(wanted?MINT:WHITE);','star.setTextColor(wanted?0xffb91635:WHITE);\n                        star.setBackground(shape(wanted?0xff390918:0xdd1a1a30,wanted?0xffe22d4a:0xffa243e3,24));','main toggle estrela')
+          p.write_text(s)
+          print('OK: estrela invertida e vermelho-sangue em TV ao Vivo, cartões e favoritos principais; brilho TV')
+          XENA_NEON_FAV_PATCH
+          python3 -m py_compile patch_xena_neon_favoritos.py
+          python3 patch_xena_neon_favoritos.py
+          python3 - <<'PYCHECK'
+          from pathlib import Path
+          base=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app')
+          live=(base/'LiveTvActivity.java').read_text()
+          main=(base/'MainActivity.java').read_text()
+          assert 'star.setRotation(180f)' in live and 'star.setRotation(180f)' in main
+          assert '0xffb91635' in live and '0xffb91635' in main
+          assert 'STROKE=0xffb641f5' in live
+          print('VALIDADO: favoritos invertidos e vermelho-sangue, neon na TV')
+          PYCHECK
+
+      - name: Corrigir barras, fundo e troca de canal em tela dividida
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_controles_precisos.py <<'XENA_CONTROLES_PATCH'
+          #!/usr/bin/env python3
+          """XenaTV 6.9: toque fora do video alterna barras; dentro seleciona audio;
+          ' Canais' substitui apenas video ativo. Aplicar depois de gestos + favoritos.
+          """
+          from pathlib import Path
+          p=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java')
+          s=p.read_text(encoding='utf-8')
+          def replace_one(old,new,label):
+           global s
+           n=s.count(old)
+           if n!=1: raise RuntimeError(f'{label}: esperado 1 trecho, encontrei {n}')
+           s=s.replace(old,new,1)
+          replace_one('''    private void showChrome(){''','''    private void toggleChrome(){
+                  if(open)return; // Guia aberto: nenhum toque deve fechar os controles inesperadamente.
+                  boolean showing=(controls!=null&&controls.getVisibility()==View.VISIBLE&&controls.getAlpha()>0.5f)
+                      ||(playerBar!=null&&playerBar.getVisibility()==View.VISIBLE&&playerBar.getAlpha()>0.5f);
+                  screen.removeCallbacks(hideChrome);
+                  if(showing)hideChrome.run();else showChrome();
+              }
+              private void showChrome(){''','alternar controles')
+          replace_one('''                if(splitEnabled){
+                              // Tela global sobre o LibVLC recebe o toque: escolhe áudio IMEDIATAMENTE.
+                              selectAudioPane(x<v.getWidth()*0.5f?1:2);
+                              lastTapAt=0;return true;
+                          }''','''                if(splitEnabled){
+                              // Imagem central: audio/tela ativa. Fundo galactico: exibir/ocultar barras.
+                              // Dois videos 16:9 lado a lado; nao confundir o fundo com video.
+                              float videoBand=Math.min(v.getHeight(),v.getWidth()*9f/32f);
+                              float top=(v.getHeight()-videoBand)*0.5f;
+                              float margin=dp(12);
+                              if(event.getY()<top-margin || event.getY()>top+videoBand+margin){
+                                  toggleChrome();
+                              }else{
+                                  selectAudioPane(x<v.getWidth()*0.5f?1:2);
+                              }
+                              lastTapAt=0;return true;
+                          }''','distinguindo video e fundo')
+          replace_one('''                }else{lastTapAt=now;lastTapX=x;showChrome();}''','''                }else{lastTapAt=now;lastTapX=x;toggleChrome();}''','alternar toque simples')
+          replace_one('''        if(selectingSecond){selectingSecond=false;playSecond(item);setGuide(false);return;}
+                  current=item;''','''        if(selectingSecond){selectingSecond=false;playSecond(item);setGuide(false);return;}
+                  // Na Tela Dividida, a escolha do guia muda SOMENTE a tela selecionada.
+                  if(splitEnabled && audiblePane==2){
+                      playSecond(item);
+                      setGuide(false);
+                      return;
+                  }
+                  current=item;''','troca de canal na tela ativa')
+          # prevent phantom overlays of gesture hints and excessive bars on player start
+          p.write_text(s,encoding='utf-8')
+          for key in ('toggleChrome()', 'if(splitEnabled && audiblePane==2)', 'float videoBand=', 'selectAudioPane(x<v.getWidth()*0.5f?1:2)'):
+           assert key in s,key
+          print('OK: fundo alterna TODAS as barras; toque no video seleciona audio; lista troca tela ativa; gestos preservados.')
+          XENA_CONTROLES_PATCH
+          python3 -m py_compile patch_controles_precisos.py
+          python3 patch_controles_precisos.py
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          s=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java').read_text()
+          for key in ('private void toggleChrome()', 'float videoBand=', 'if(splitEnabled && audiblePane==2)', 'rightAudioBadge.setVisibility(View.GONE)', 'leftAudioBadge.setVisibility(View.GONE)', 'attrs.screenBrightness=brightness', 'showGesture("♫ Volume'):
+              assert key in s, f'Recurso não aplicado: {key}'
+          assert s.count('{')==s.count('}'), 'Java com chaves desbalanceadas'
+          print('CONTROLES: toque em fundo alterna barras; video seleciona audio; canal troca apenas na metade ativa')
+          PYVERIFY
+
+      - name: Aplicar tela Início cinematográfica inspirada na Base44
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_inicio_base44.py <<'XENA_BASE44_HOME_PATCH'
+          #!/usr/bin/env python3
+          """XenaTV 6.9: tela Início cinematográfica inspirada na referência Base44.
+          Modifica apenas apresentação/navegação Home de MainActivity; preserva
+          importação, classificação, séries, player, fontes e demais atividades.
+          Aplicar após patch_xenatv_69_integrada.py (ícones locais disponíveis).
+          """
+          from pathlib import Path
+
+          p=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/MainActivity.java')
+          s=p.read_text(encoding='utf-8')
+
+          def once(old,new,label):
+              global s
+              n=s.count(old)
+              if n!=1: raise RuntimeError(f'{label}: esperado 1 trecho, encontrados {n}')
+              s=s.replace(old,new,1)
+
+          once('    private LinearLayout root, body, dock, sidebar, rows, groups;',
+          '''    private LinearLayout root, body, dock, sidebar, rows, groups;
+              // A personalização Base44 só aparece na aba Início; outras abas mantêm o visual existente.
+              private View homeNavigation,originalHeader,originalHeaderDivider,originalDockHolder,originalSideDivider;
+              private View pipoouHomeAnchor;''','campos de Home')
+
+          once('''        root.addView(header,lp(-1,-2));
+                  View divider=new View(this);divider.setBackgroundColor(0xff4b6a75);root.addView(divider,lp(-1,1));''',
+          '''        originalHeader=header;
+                  root.addView(header,lp(-1,-2));
+                  homeNavigation=buildCinematicHomeNavigation();
+                  root.addView(homeNavigation,0,lp(-1,61));
+                  View divider=new View(this);divider.setBackgroundColor(0xff4b6a75);
+                  originalHeaderDivider=divider;root.addView(divider,lp(-1,1));''','cabeçalho independente na Home')
+
+          once('''            View sideDivider=new View(this);sideDivider.setBackgroundColor(BORDER);
+                      contentArea.addView(sideDivider,lp(1,-1));refreshSidebar();''',
+          '''            View sideDivider=new View(this);sideDivider.setBackgroundColor(BORDER);
+                      originalSideDivider=sideDivider;
+                      contentArea.addView(sideDivider,lp(1,-1));refreshSidebar();''','separador lateral')
+
+          once('''        root.addView(holder,hp);refreshDock();''',
+          '''        originalDockHolder=holder;root.addView(holder,hp);refreshDock();''','salvar dock existente')
+
+          once('''        if(promoTicker!=null)promoHandler.removeCallbacks(promoTicker);
+                  body.removeAllViews();groups=null;rows=null;''',
+          '''        if(promoTicker!=null)promoHandler.removeCallbacks(promoTicker);
+                  boolean cinematicHome=HOME.equals(tab)&&platformBrand.isEmpty();
+                  if(homeNavigation!=null)homeNavigation.setVisibility(cinematicHome?View.VISIBLE:View.GONE);
+                  if(originalHeader!=null)originalHeader.setVisibility(cinematicHome?View.GONE:View.VISIBLE);
+                  if(originalHeaderDivider!=null)originalHeaderDivider.setVisibility(cinematicHome?View.GONE:View.VISIBLE);
+                  if(originalDockHolder!=null)originalDockHolder.setVisibility(cinematicHome?View.GONE:View.VISIBLE);
+                  if(sidebar!=null)sidebar.setVisibility(cinematicHome?View.GONE:View.VISIBLE);
+                  if(originalSideDivider!=null)originalSideDivider.setVisibility(cinematicHome?View.GONE:View.VISIBLE);
+                  if(cinematicHome)body.setPadding(dp(13),dp(11),dp(13),dp(24));
+                  else body.setPadding(dp(16),dp(17),dp(16),dp(24));
+                  body.removeAllViews();pipoouHomeAnchor=null;groups=null;rows=null;''','trocar layout apenas na Home')
+
+          start=s.index('    private void showHome(){')
+          end=s.index('    /** O Cantinho do Pipoou',start)
+          old=s[start:end]
+          assert old.count('    private void showHome(){')==1
+          replacement='''    /** Menu superior da Home: usa ícones neon já empacotados no APK.
+               * Não altera o cabeçalho nem a barra inferior das demais páginas. */
+              private View buildCinematicHomeNavigation(){
+                  HorizontalScrollView scroll=new HorizontalScrollView(this);
+                  scroll.setHorizontalScrollBarEnabled(false);
+                  scroll.setFillViewport(true);
+                  scroll.setBackground(gradient(0xee1d0e35,0xe90b2230,23));
+                  LinearLayout nav=row();nav.setGravity(Gravity.CENTER_VERTICAL);
+                  nav.setPadding(dp(13),dp(5),dp(13),dp(5));
+                  LinearLayout logo=col();logo.setGravity(Gravity.CENTER_VERTICAL);
+                  TextView name=text("XENATV",16,WHITE,true);name.setLetterSpacing(.15f);logo.addView(name);
+                  TextView premium=text("P R E M I U M",8,0xff43ee9e,true);logo.addView(premium);
+                  LinearLayout.LayoutParams brandLp=lp(130,48);brandLp.rightMargin=dp(15);
+                  nav.addView(logo,brandLp);
+                  String[] destinations={HOME,TV,MOVIES,SERIES,FAV,LIST};
+                  for(String destination:destinations){
+                      FrameLayout tile=new FrameLayout(this);
+                      tile.addView(xenaNavImage(destination,26),new FrameLayout.LayoutParams(dp(27),dp(27),Gravity.CENTER));
+                      tile.setBackground(shape(destination.equals(HOME)?0xff37104f:0x88170f32,
+                          destination.equals(HOME)?0xffbb45f5:0x884b3366,12));
+                      LinearLayout.LayoutParams navLp=lp(43,42);navLp.rightMargin=dp(4);
+                      nav.addView(tile,navLp);
+                      tile.setContentDescription("Abrir "+destination);
+                      tapMotion(tile);tile.setOnClickListener(v->navigate(destination));
+                  }
+                  Button pipoou=button("Pipoou",false);
+                  pipoou.setTextColor(0xfff4e9ff);
+                  pipoou.setBackground(shape(0x771c1236,0xff7441b0,19));
+                  LinearLayout.LayoutParams pipoLp=lp(82,41);pipoLp.leftMargin=dp(13);
+                  nav.addView(pipoou,pipoLp);
+                  pipoou.setOnClickListener(v->{
+                      if(pipoouHomeAnchor!=null&&scrolling!=null){
+                          scrolling.smoothScrollTo(0,pipoouHomeAnchor.getTop());
+                      }
+                  });
+                  Button games=button("Jogos",false);
+                  games.setBackground(shape(0x771c1236,0xff7441b0,19));
+                  LinearLayout.LayoutParams gameLp=lp(69,41);gameLp.leftMargin=dp(6);
+                  nav.addView(games,gameLp);games.setOnClickListener(v->navigate(GAMES));
+                  FrameLayout searchButton=new FrameLayout(this);
+                  searchButton.addView(xenaNavImage(SEARCH,26),new FrameLayout.LayoutParams(dp(27),dp(27),Gravity.CENTER));
+                  searchButton.setBackground(shape(0x771c1236,0xff7441b0,19));
+                  LinearLayout.LayoutParams searchLp=lp(44,41);searchLp.leftMargin=dp(6);
+                  nav.addView(searchButton,searchLp);
+                  searchButton.setContentDescription("Buscar na XenaTV");
+                  searchButton.setOnClickListener(v->navigate(SEARCH));
+                  scroll.addView(nav);return scroll;
+              }
+
+              private void homeTitle(String heading,String subtitle,String destination){
+                  LinearLayout line=row();line.setGravity(Gravity.CENTER_VERTICAL);
+                  TextView title=text(heading,20,WHITE,true);line.addView(title,new LinearLayout.LayoutParams(0,-2,1));
+                  TextView marker=text("●",13,0xff38e681,true);marker.setPadding(dp(6),0,0,0);
+                  line.addView(marker);
+                  if(destination!=null){
+                      Button all=button("Ver todos  ›",false);all.setBackgroundColor(Color.TRANSPARENT);
+                      all.setTextColor(0xffb79de0);line.addView(all,lp(93,39));
+                      all.setOnClickListener(v->navigate(destination));
+                  }
+                  body.addView(line);gap(body,1);
+                  if(subtitle!=null&&!subtitle.isEmpty()){
+                      body.addView(text(subtitle,11,MUTED,false));gap(body,11);
+                  }
+              }
+
+              /** Usa títulos IPTV reais; não fabrica doramas nem categorias. */
+              private void homeFilteredRail(String title,String hint,String kind,String categoryMatch){
+                  List<ChannelStore.Channel> found=store.query("Todos",kind,"",120,0);
+                  LinearLayout strip=row();int amount=0;
+                  for(ChannelStore.Channel ch:found){
+                      String label=(ch.category+" "+ch.name).toLowerCase(Locale.ROOT);
+                      if(categoryMatch!=null && !label.contains(categoryMatch)
+                          && !("dorama".equals(categoryMatch) &&
+                              (label.contains("k-drama")||label.contains("coreano")||label.contains("korean"))))continue;
+                      LinearLayout card=posterCard(ch,123);
+                      LinearLayout.LayoutParams cp=lp(123,222);cp.rightMargin=dp(10);
+                      strip.addView(card,cp);
+                      if(++amount>=12)break;
+                  }
+                  if(amount==0)return;
+                  homeTitle(title,hint,kind);
+                  HorizontalScrollView slider=new HorizontalScrollView(this);
+                  slider.setHorizontalScrollBarEnabled(false);slider.addView(strip);
+                  body.addView(slider);gap(body,22);
+              }
+
+              private void homeContinueSection(){
+                  homeTitle("Continuar assistindo","Seus conteúdos recentes",null);
+                  // 'Recentes' é histórico real da fonte; não simulamos percentual de progresso.
+                  List<ChannelStore.Channel> recent=store.query("Recentes",MOVIES,"",7,0);
+                  if(recent.isEmpty())recent=store.query("Recentes",SERIES,"",7,0);
+                  if(recent.isEmpty()){
+                      TextView info=text("Os conteúdos vistos recentemente aparecerão aqui quando disponíveis na sua lista.",12,MUTED,false);
+                      info.setPadding(dp(15),dp(20),dp(15),dp(20));
+                      info.setBackground(shape(0x99120d29,0xff4d2b67,15));
+                      body.addView(info,lp(-1,-2));gap(body,19);return;
+                  }
+                  LinearLayout rail=row();
+                  for(ChannelStore.Channel ch:recent){
+                      LinearLayout card=posterCard(ch,116);
+                      LinearLayout.LayoutParams pos=lp(116,211);pos.rightMargin=dp(10);
+                      rail.addView(card,pos);
+                  }
+                  HorizontalScrollView scroll=new HorizontalScrollView(this);
+                  scroll.setHorizontalScrollBarEnabled(false);scroll.addView(rail);
+                  body.addView(scroll);gap(body,23);
+              }
+
+              private void showHome(){
+                  String status=prefs.getString("status","");
+                  // A arte em destaque é real, da biblioteca IPTV ativa.
+                  List<ChannelStore.Channel> featured=store.query("Todos",MOVIES,"",1,0);
+                  ChannelStore.Channel spotlight=featured.isEmpty()?null:featured.get(0);
+                  FrameLayout hero=new FrameLayout(this);
+                  hero.setBackground(shape(0xff1a0b2e,0xffa346df,22));
+                  hero.setClipToOutline(true);
+                  ImageView backdrop=new ImageView(this);
+                  backdrop.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                  if(spotlight!=null)ChannelArtwork.bind(backdrop,spotlight.logo,true);
+                  else backdrop.setImageResource(R.drawable.xena_cosmic_banner);
+                  hero.addView(backdrop,new FrameLayout.LayoutParams(-1,-1));
+                  View darkShade=new View(this);
+                  GradientDrawable shading=new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
+                      new int[]{0xf50b091d,0xd9140b2c,0x55130c28,0x220b1526});
+                  darkShade.setBackground(shading);
+                  hero.addView(darkShade,new FrameLayout.LayoutParams(-1,-1));
+                  LinearLayout intro=col();intro.setGravity(Gravity.BOTTOM);
+                  intro.setPadding(dp(18),dp(16),dp(17),dp(23));
+                  TextView tag=text("●  EM DESTAQUE · SUA BIBLIOTECA",10,0xff57efb0,true);
+                  tag.setPadding(dp(11),dp(7),dp(11),dp(7));
+                  tag.setBackground(shape(0xba160a27,0xff6e349b,20));
+                  intro.addView(tag,lp(-2,30));gap(intro,12);
+                  TextView title=text(spotlight==null?"Seu cinema. Sua TV.":spotlight.name,
+                      widthDp()<430?29:36,WHITE,true);
+                  title.setMaxLines(2);intro.addView(title);gap(intro,9);
+                  intro.addView(text(spotlight==null?
+                      "Adicione sua lista IPTV para explorar filmes, séries e canais.":
+                      "Um destaque da sua biblioteca pessoal.",12,0xffd8d0e8,false));
+                  gap(intro,15);
+                  LinearLayout controls=row();
+                  Button watch=button(spotlight==null?"＋ Adicionar lista":"▶ Assistir",true);
+                  watch.setBackground(shape(0xff9b24ce,0xffbf57f5,19));
+                  watch.setTextColor(WHITE);
+                  controls.addView(watch,lp(-2,44));
+                  watch.setOnClickListener(v->{if(spotlight==null)showAddDialog();else handleItem(spotlight);});
+                  if(spotlight!=null){
+                      Button details=button("ⓘ Detalhes",false);
+                      LinearLayout.LayoutParams detailParams=lp(-2,44);detailParams.leftMargin=dp(8);
+                      controls.addView(details,detailParams);
+                      details.setOnClickListener(v->showDetails(spotlight));
+                  }
+                  intro.addView(controls);
+                  hero.addView(intro,new FrameLayout.LayoutParams(-1,-1,Gravity.BOTTOM));
+                  body.addView(hero,lp(-1,widthDp()<480?288:350));gap(body,24);
+
+                  if(store.count()==0){
+                      homeContinueSection();
+                      addPipoouSpotlight();gap(body,21);
+                      addPlatformShortcuts();gap(body,18);
+                      Button add=button("Adicionar minha lista IPTV",true);
+                      body.addView(add,lp(-1,48));add.setOnClickListener(v->showAddDialog());
+                      return;
+                  }
+                  homeContinueSection();
+                  addPipoouSpotlight();gap(body,22);
+                  addRail("Séries",SERIES); // Mesma consulta existente; nenhuma mudança na sincronização.
+                  homeFilteredRail("Doramas","Romances e dramas coreanos",SERIES,"dorama");
+                  homeTitle("Jogos de Hoje","Agenda e canais esportivos",GAMES);
+                  Button games=button("⚽ Conferir jogos do dia",false);
+                  games.setTextColor(0xff55eb99);games.setBackground(gradient(0xff22103c,0xff102c2d,16));
+                  body.addView(games,lp(-1,53));games.setOnClickListener(v->navigate(GAMES));
+                  gap(body,22);
+                  addRail("Filmes",MOVIES);
+                  addPlatformShortcuts();gap(body,20);
+                  if(loading||!status.isEmpty()){
+                      TextView note=text(loading?"Atualizando sua lista...":status,11,MUTED,false);
+                      note.setPadding(dp(12),dp(12),dp(12),dp(12));
+                      note.setBackground(shape(SURFACE,BORDER,13));body.addView(note);
+                  }
+              }
+          '''
+          s=s[:start]+replacement+s[end:]
+
+          # A seção Pipoou já tem seu slideshow e comportamento; só registra a âncora.
+          once('''        body.addView(card,lp(-1,-2));
+                  promoIndex=promoRandom.nextInt(promoResources.length);''',
+          '''        body.addView(card,lp(-1,-2));
+                  pipoouHomeAnchor=card;
+                  promoIndex=promoRandom.nextInt(promoResources.length);''','âncora Pipoou')
+
+          assert s.count('class MainActivity')==1
+          assert s.count('private void showHome(){')==1
+          assert 'private void switchPlatformKind(' in s # cadeado: mantém Séries intactas
+          assert 'private void showSeriesEpisodes(' in s
+          assert 'private void homeContinueSection()' in s
+          assert s.count('{')==s.count('}')
+          p.write_text(s,encoding='utf-8')
+          print('OK: tela Início premium tipo Base44 aplicada. Séries, sincronização, plataformas e player preservados.')
+          XENA_BASE44_HOME_PATCH
+          python3 -m py_compile patch_inicio_base44.py
+          python3 patch_inicio_base44.py
+          cat > patch_pipoou_banner_fullbleed.py <<'XENA_BANNER_PATCH'
+          #!/usr/bin/env python3
+          """XenaTV 6.9: Todas as artes do slideshow Pipoou em tela cheia no cartão,
+          com rotação a cada 8s. Aplicar ao final dos outros patches, antes do Gradle.
+          Não modifica a lógica de Séries, Filmes, TV ou bibliotecas.
+          """
+          from pathlib import Path
+
+          main = Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/MainActivity.java')
+          s = main.read_text(encoding='utf-8')
+
+          def replace_exact(before, after, label):
+              global s
+              matches = s.count(before)
+              if matches != 1:
+                  raise RuntimeError(f'{label}: esperado 1 trecho, encontrados {matches}')
+              s = s.replace(before, after, 1)
+
+          replace_exact(
+              '    private Runnable promoTicker;',
+              '    private Runnable promoTicker;\n'
+              '    // Todas as imagens do Cantinho do Pipoou giram a cada 8 segundos.\n'
+              '    private static final long PIPOOU_BANNER_INTERVAL_MS=8000L;',
+              'intervalo do banner')
+          replace_exact(
+              '        LinearLayout card=col();card.setPadding(dp(7),dp(7),dp(7),dp(10));',
+              '        LinearLayout card=col();card.setPadding(0,0,0,dp(10));',
+              'eliminar margens da imagem')
+          replace_exact(
+              '''        visual.setBackground(new GalaxyBackground(this,0xff10172b));
+                  promoImage=new ImageView(this);promoImage.setScaleType(ImageView.ScaleType.FIT_CENTER);''',
+              '''        // Fundo de reserva só é visto antes da imagem carregar; cantos recortados.
+                  visual.setBackground(shape(0xff10172b,0,17));
+                  visual.setClipToOutline(true);
+                  promoImage=new ImageView(this);
+                  // CENTER_CROP preenche 100% do quadro sem esticar nem deixar faixas vazias.
+                  // Aplica-se automaticamente a TODAS as nove imagens do carrossel.
+                  promoImage.setScaleType(ImageView.ScaleType.CENTER_CROP);''',
+              'preenchimento integral')
+          replace_exact(
+              '        promoHandler.postDelayed(promoTicker,20000L);',
+              '        promoHandler.postDelayed(promoTicker,PIPOOU_BANNER_INTERVAL_MS);',
+              'troca mais rápida')
+          main.write_text(s,encoding='utf-8')
+          assert 'ImageView.ScaleType.CENTER_CROP' in s
+          assert 'PIPOOU_BANNER_INTERVAL_MS=8000L' in s
+          assert 'promoHandler.postDelayed(promoTicker,PIPOOU_BANNER_INTERVAL_MS)' in s
+          assert s.count('{')==s.count('}')
+          print('OK: 9 banners sem laterais vazias, proporção preservada e troca automática a cada 8 s.')
+          XENA_BANNER_PATCH
+          python3 -m py_compile patch_pipoou_banner_fullbleed.py
+          python3 patch_pipoou_banner_fullbleed.py
+          python3 - <<'PYVERIFY'
+          from pathlib import Path
+          app=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/MainActivity.java').read_text()
+          for key in ('buildCinematicHomeNavigation()', 'homeContinueSection()', 'homeFilteredRail(', 'PIPOOU_BANNER_INTERVAL_MS=8000L', 'ImageView.ScaleType.CENTER_CROP'):
+              assert key in app, f'Home incompleta: {key}'
+          for protected in ('switchPlatformKind(', 'showPlatformCatalog()', 'showSeriesEpisodes('):
+              assert protected in app, f'Bloco preservado ausente: {protected}'
+          assert app.count('{')==app.count('}')
+          print('HOME: cabeçalho cinematográfico, conteúdo real, Pipoou 8s e séries preservadas')
+          PYVERIFY
+
+
+      - name: CORRIGIR - Ao abrir TV ao vivo iniciar Mirante e nunca Fazenda
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_tv_mirante.py <<'XENA_MIRANTE_PATCH'
+          #!/usr/bin/env python3
+          """XenaTV 6.9 - Ao entrar na TV ao Vivo, priorize Mirante.
+          O acesso ao Pipoou continua usando only_fazenda=true e nao muda.
+          A regra nao altera catalogo de filmes ou series.
+          """
+          from pathlib import Path
+          p=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/LiveTvActivity.java')
+          s=p.read_text(encoding='utf-8')
+          old='''    private Entry chooseStartupChannel(){
+                  if(channels.isEmpty())return null;
+                  android.content.SharedPreferences prefs=getSharedPreferences("xena_tv_start_v1",MODE_PRIVATE);
+                  String savedAddress=prefs.getString("address","");
+                  String savedSource=prefs.getString("source","");
+                  if(!getIntent().getBooleanExtra("only_fazenda",false)&&!savedAddress.isEmpty()){
+                      for(Entry entry:channels){
+                          if(entry.sourceId.equals(savedSource)&&entry.address.equals(savedAddress))return entry;
+                      }
+                  }
+                  // Prefere a Fazenda/câmera principal das listas habilitadas.
+                  Entry best=null;int bestScore=Integer.MIN_VALUE;
+                  for(Entry entry:channels){
+                      int score=FazendaStartRules.score(entry.title,entry.group);
+                      if(score>bestScore){bestScore=score;best=entry;}
+                  }
+                  // Se não houver Fazenda, inicia a primeira TV válida em vez de uma tela vazia.
+                  if(bestScore==Integer.MIN_VALUE&&getIntent().getBooleanExtra("only_fazenda",false))return null;
+                  return bestScore==Integer.MIN_VALUE?channels.get(0):best;
+              }'''
+          new='''    private Entry chooseStartupChannel(){
+                  if(channels.isEmpty())return null;
+                  if(getIntent().getBooleanExtra("only_fazenda",false)){
+                      // A Fazenda abre automaticamente SOMENTE no Cantinho do Pipoou.
+                      Entry best=null;int bestScore=Integer.MIN_VALUE;
+                      for(Entry entry:channels){
+                          int score=FazendaStartRules.score(entry.title,entry.group);
+                          if(score>bestScore){bestScore=score;best=entry;}
+                      }
+                      return bestScore==Integer.MIN_VALUE?null:best;
+                  }
+                  // TV AO VIVO normal: a TV Mirante (São Luís/Globo) é o canal inicial.
+                  // Não reutiliza o antigo canal inicial salvo, que podia ser A Fazenda.
+                  Entry mirante=null;int bestScore=0;
+                  for(Entry entry:channels){
+                      int score=MiranteStartRules.score(entry.title,entry.group);
+                      if(score>bestScore){bestScore=score;mirante=entry;}
+                  }
+                  // Sem Mirante na lista? Mostrar a lista, NUNCA abrir A Fazenda.
+                  return mirante;
+              }'''
+          assert s.count(old)==1, f'Trecho de inicializacao nao encontrado: {s.count(old)}'
+          s=s.replace(old,new,1)
+          p.write_text(s,encoding='utf-8')
+          helper=p.with_name('MiranteStartRules.java')
+          helper.write_text('''package br.com.xenatv.app;
+
+          /** Seleciona somente Mirante/Globo São Luís para a TV normal. */
+          public final class MiranteStartRules {
+              private MiranteStartRules(){}
+              public static int score(String title,String group){
+                  if(FazendaStartRules.isFazenda(title,group))return 0;
+                  String name=FazendaStartRules.key(title);
+                  // Evitar confundir a categoria Globo com um canal real da Mirante.
+                  if(name.contains("tv mirante"))return 100;
+                  if(name.contains("globo mirante") || name.contains("mirante globo"))return 95;
+                  if(name.equals("mirante") || name.startsWith("mirante "))return 90;
+                  if(name.contains("globo sao luis") || name.contains("globo slz") ||
+                     name.contains("globo maranhao") || name.matches(".*\\\\bglobo\\\\s+ma\\\\b.*"))return 70;
+                  return 0;
+              }
+          }
+          ''',encoding='utf-8')
+          assert 'return mirante;' in s and 'only_fazenda' in s
+          print('PATCH OK: TV normal prioriza Mirante; Pipoou ainda prioriza Fazenda; ausência Mirante mostra canais.')
+          XENA_MIRANTE_PATCH
+          python3 -m py_compile patch_tv_mirante.py
+          python3 patch_tv_mirante.py
+          python3 - <<'XENA_MIRANTE_TEST'
+          from pathlib import Path
+          p=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/LiveTvActivity.java')
+          s=p.read_text(encoding='utf-8')
+          assert 'return mirante;' in s
+          assert 'if(getIntent().getBooleanExtra("only_fazenda",false))' in s
+          assert 'MiranteStartRules.score(entry.title,entry.group)' in s
+          assert 'Prefere a Fazenda/câmera principal' not in s
+          assert Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/MiranteStartRules.java').is_file()
+          print('INICIALIZACAO TV: Mirante prioritária; Fazenda só via Pipoou')
+          XENA_MIRANTE_TEST
+          cat > TestMiranteStart.java <<'TEST_MIRANTE'
+          package br.com.xenatv.app;
+          public class TestMiranteStart {
+              static void check(boolean ok){if(!ok)throw new AssertionError("Regra Mirante inválida");}
+              public static void main(String[] args){
+                  check(MiranteStartRules.score("TV Mirante HD","TV Aberta")>0);
+                  check(MiranteStartRules.score("Globo São Luís","TV Aberta")>0);
+                  check(MiranteStartRules.score("Globo MA","TV Aberta")>0);
+                  check(MiranteStartRules.score("A Fazenda câmera 1","Realities")==0);
+                  check(MiranteStartRules.score("Globo News","Notícias")==0);
+                  check(MiranteStartRules.score("TV Mirante","A Fazenda")==0);
+                  check(MiranteStartRules.score("Globo RJ","TV Aberta")==0);
+                  System.out.println("7 testes de canais TV Mirante OK");
+              }
+          }
+          TEST_MIRANTE
+          app=xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app
+          mkdir -p /tmp/teste_mirante_xenatv
+          cp TestMiranteStart.java /tmp/teste_mirante_xenatv/TestMiranteStart.java
+          javac -encoding UTF-8 -d /tmp/teste_mirante_xenatv \
+            "$app/FazendaStartRules.java" "$app/MiranteStartRules.java" /tmp/teste_mirante_xenatv/TestMiranteStart.java
+          java -cp /tmp/teste_mirante_xenatv br.com.xenatv.app.TestMiranteStart
+
+
+      - name: Corrigir ordem Home com Jogos reais e Pipoou sem bordas vazias
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_home_games_v4.py <<'XENA_V4_PATCH'
+          #!/usr/bin/env python3
+          """XenaTV 6.9 V4: corrigir ordem da Home e inserir cards reais de Jogos de Hoje.
+          Executar após patch_inicio_base44.py e patch_pipoou_banner_fullbleed.py.
+          """
+          from pathlib import Path
+          p=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/MainActivity.java')
+          s=p.read_text(encoding='utf-8')
+          def once(old,new,label):
+              global s
+              old=old.replace("                  ","        ")
+              new=new.replace("                  ","        ")
+              n=s.count(old)
+              if n!=1:raise RuntimeError(f'{label}: {n} ocorrências, esperada 1')
+              s=s.replace(old,new,1)
+          
+          # Trocar de lugar a fileira de continuidade: só DEPOIS dos jogos e do Pipoou.
+          once('''                  if(store.count()==0){
+                                homeContinueSection();
+                                addPipoouSpotlight();gap(body,21);''','''                  if(store.count()==0){
+                                homeGamesPanel();
+                                addPipoouSpotlight();gap(body,21);
+                                homeContinueSection();''','ordem home vazia')
+          once('''                  homeContinueSection();
+                            addPipoouSpotlight();gap(body,22);
+                            addRail("Séries",SERIES);''','''                  homeGamesPanel();
+                            addPipoouSpotlight();gap(body,22);
+                            homeContinueSection();
+                            addRail("Séries",SERIES);''','ordem home com catalogo')
+          once('''                  homeTitle("Jogos de Hoje","Agenda e canais esportivos",GAMES);
+                            Button games=button("⚽ Conferir jogos do dia",false);
+                            games.setTextColor(0xff55eb99);games.setBackground(gradient(0xff22103c,0xff102c2d,16));
+                            body.addView(games,lp(-1,53));games.setOnClickListener(v->navigate(GAMES));
+                            gap(body,22);
+                            addRail("Filmes",MOVIES);''','''                  addRail("Filmes",MOVIES);''','remover jogos na posicao errada')
+          
+          # Consulta leve de agenda real; se não houver rede, permite abrir a tela própria de jogos.
+          helper=r'''    /** A Home exibe somente partidas REAIS, sem resultados ou percentuais fictícios. */
+              private static final class HomeMatch {
+                  final String label, fixture, info;
+                  HomeMatch(String l,String f,String i){label=l;fixture=f;info=i;}
+              }
+              private static volatile long homeGamesCacheAt=0L;
+              private static volatile java.util.ArrayList<HomeMatch> homeGamesCache=new java.util.ArrayList<>();
+          
+              private void homeGamesPanel(){
+                  homeTitle("Jogos de Hoje","Agenda real • horário de Brasília",GAMES);
+                  LinearLayout list=col();body.addView(list,lp(-1,-2));
+                  Button all=button("⚽ Ver todos os jogos",false);
+                  all.setTextColor(MINT);all.setBackground(gradient(0xff22103c,0xff102c2d,15));
+                  body.addView(all,lp(-1,45));all.setOnClickListener(v->navigate(GAMES));gap(body,20);
+                  java.util.ArrayList<HomeMatch> cached=homeGamesCache;
+                  if(System.currentTimeMillis()-homeGamesCacheAt<5*60*1000L){
+                      drawHomeMatches(list,cached,false);return;
+                  }
+                  TextView loading=text("Consultando jogos de hoje...",12,MUTED,false);
+                  list.addView(loading,lp(-1,36));
+                  new Thread(()->{
+                      java.util.ArrayList<HomeMatch> games=new java.util.ArrayList<>();
+                      String[] leagues={"soccer/bra.1","soccer/bra.2","soccer/conmebol.libertadores","soccer/conmebol.sudamericana"};
+                      String[] labels={"Brasileirão Série A","Brasileirão Série B","Libertadores","Sul-Americana"};
+                      java.text.SimpleDateFormat day=new java.text.SimpleDateFormat("yyyyMMdd",java.util.Locale.US);
+                      day.setTimeZone(java.util.TimeZone.getTimeZone("America/Sao_Paulo"));
+                      String date=day.format(new java.util.Date());
+                      boolean loadedAny=false;
+                      for(int i=0;i<leagues.length&&games.size()<5;i++){
+                          java.net.HttpURLConnection con=null;
+                          try{
+                              String address="https://site.api.espn.com/apis/site/v2/sports/"+leagues[i]+"/scoreboard?dates="+date;
+                              con=(java.net.HttpURLConnection)new java.net.URL(address).openConnection();
+                              con.setConnectTimeout(5000);con.setReadTimeout(6000);
+                              con.setRequestProperty("Accept","application/json");
+                              con.setRequestProperty("User-Agent","XenaTV/6.9");
+                              if(con.getResponseCode()!=200)continue;
+                              byte[] chunk=new byte[8192];int n,total=0;
+                              java.io.ByteArrayOutputStream bytes=new java.io.ByteArrayOutputStream();
+                              try(java.io.InputStream input=con.getInputStream()){
+                                  while((n=input.read(chunk))>0){
+                                      total+=n;if(total>500_000)throw new java.io.IOException("Agenda grande");
+                                      bytes.write(chunk,0,n);
+                                  }
+                              }
+                              org.json.JSONObject root=new org.json.JSONObject(bytes.toString("UTF-8"));
+                              org.json.JSONArray events=root.optJSONArray("events");
+                              if(events==null)continue;
+                              loadedAny=true;
+                              for(int j=0;j<events.length()&&games.size()<5;j++){
+                                  org.json.JSONObject event=events.optJSONObject(j);if(event==null)continue;
+                                  org.json.JSONArray comps=event.optJSONArray("competitions");
+                                  if(comps==null||comps.length()==0)continue;
+                                  org.json.JSONArray teams=comps.optJSONObject(0).optJSONArray("competitors");
+                                  if(teams==null||teams.length()<2)continue;
+                                  String home="",away="",scoreHome="",scoreAway="";
+                                  for(int k=0;k<teams.length();k++){
+                                      org.json.JSONObject team=teams.optJSONObject(k);if(team==null)continue;
+                                      String title=team.optJSONObject("team")==null?"":team.optJSONObject("team").optString("displayName","");
+                                      if("home".equals(team.optString("homeAway"))){home=title;scoreHome=team.optString("score","");}
+                                      else if("away".equals(team.optString("homeAway"))){away=title;scoreAway=team.optString("score","");}
+                                  }
+                                  if(home.isEmpty()||away.isEmpty())continue;
+                                  org.json.JSONObject status=event.optJSONObject("status");
+                                  org.json.JSONObject type=status==null?null:status.optJSONObject("type");
+                                  String state=type==null?"pre":type.optString("state","pre");
+                                  String info;
+                                  if(("in".equals(state)||"post".equals(state))&&!scoreHome.isEmpty()&&!scoreAway.isEmpty())
+                                      info=scoreHome+" - "+scoreAway+("in".equals(state)?" • AO VIVO":" • Encerrado");
+                                  else{
+                                      info="Horário a confirmar";
+                                      try{
+                                          String utc=event.optString("date","");
+                                          java.text.SimpleDateFormat iso=new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'",java.util.Locale.US);
+                                          iso.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+                                          java.util.Date start=iso.parse(utc);
+                                          java.text.SimpleDateFormat time=new java.text.SimpleDateFormat("HH:mm",new java.util.Locale("pt","BR"));
+                                          time.setTimeZone(java.util.TimeZone.getTimeZone("America/Sao_Paulo"));
+                                          info=time.format(start);
+                                      }catch(Exception ignored){}
+                                  }
+                                  games.add(new HomeMatch(labels[i],home+"  ×  "+away,info));
+                              }
+                          }catch(Exception ignored){}finally{if(con!=null)con.disconnect();}
+                      }
+                      final boolean received=loadedAny;
+                      if(received){homeGamesCache=games;homeGamesCacheAt=System.currentTimeMillis();}
+                      runOnUiThread(()->{
+                          if(isFinishing()||isDestroyed()||!HOME.equals(tab)||!platformBrand.isEmpty())return;
+                          drawHomeMatches(list,games,!received);
+                      });
+                  },"XenaTV-Home-Games").start();
+              }
+              private void drawHomeMatches(LinearLayout host,java.util.List<HomeMatch> matches,boolean unavailable){
+                  host.removeAllViews();
+                  if(matches.isEmpty()){
+                      TextView message=text(unavailable?"Agenda indisponível no momento. Abra Jogos de Hoje para tentar novamente.":
+                          "Sem partidas identificadas hoje nas competições consultadas.",11,MUTED,false);
+                      message.setPadding(dp(13),dp(14),dp(13),dp(14));
+                      message.setBackground(shape(0xb61a1032,0xff823cc9,15));
+                      host.addView(message,lp(-1,-2));gap(host,8);return;
+                  }
+                  HorizontalScrollView strip=new HorizontalScrollView(this);
+                  strip.setHorizontalScrollBarEnabled(false);
+                  LinearLayout rowCards=row();
+                  for(HomeMatch match:matches){
+                      LinearLayout card=col();card.setPadding(dp(14),dp(12),dp(14),dp(12));
+                      card.setBackground(gradient(0xff26103b,0xff0d2b2b,17));
+                      card.addView(text(match.label,10,MINT,true));gap(card,7);
+                      TextView fixture=text(match.fixture,14,WHITE,true);fixture.setMaxLines(2);card.addView(fixture);gap(card,6);
+                      card.addView(text(match.info,12,ACCENT,true));
+                      LinearLayout.LayoutParams at=lp(widthDp()<450?246:290,119);at.rightMargin=dp(9);
+                      rowCards.addView(card,at);card.setOnClickListener(v->navigate(GAMES));
+                  }
+                  strip.addView(rowCards);host.addView(strip);gap(host,10);
+              }
+          '''
+          assert s.count('    private void showHome(){')==1
+          s=s.replace('    private void showHome(){',helper+'\n    private void showHome(){',1)
+          assert s.count('{')==s.count('}'),('braces',s.count('{'),s.count('}'))
+          assert s.count('homeGamesPanel();')==2
+          assert s.index('homeGamesPanel();',s.index('private void showHome()')) < s.index('addPipoouSpotlight();',s.index('private void showHome()'))
+          p.write_text(s,encoding='utf-8')
+          print('V4: jogos reais (com fallback), ordem banner/jogos/Pipoou/continuar, séries não alteradas')
+          XENA_V4_PATCH
+          python3 -m py_compile patch_home_games_v4.py
+          python3 patch_home_games_v4.py
+          python3 - <<'XENA_V4_VALIDATE'
+          from pathlib import Path
+          main=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/MainActivity.java').read_text()
+          live=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/LiveTvActivity.java').read_text()
+          # O diagnostico 'totalFilms' so e inserido na proxima etapa.
+          # Verificar aqui apenas o codigo que JA existe.
+          for key in ('homeGamesPanel();','PIPOOU_BANNER_INTERVAL_MS=8000L','ImageView.ScaleType.CENTER_CROP','XtreamCatalog.moviesOnly'):
+              assert key in main, 'Falta no APK: '+key
+          for key in ('MiranteStartRules.score','only_fazenda'):
+              assert key in live, 'Inicializacao de TV incompleta: '+key
+          assert main.count('{')==main.count('}')
+          print('CHECK V4 OK: Home/Jogos/Pipoou/Mirante/Filmes; Séries preservadas')
+          XENA_V4_VALIDATE
+      - name: Diagnosticar filmes por fonte e plataforma sem alterar as series
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_movie_diagnostics_v4.py <<'XENA_V4_PATCH'
+          #!/usr/bin/env python3
+          """XenaTV V4: tornar observável por que filmes não surgem nas plataformas.
+          Não modifica a lógica, o banco ou a sincronização de Séries.
+          """
+          from pathlib import Path
+          p=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/MainActivity.java')
+          s=p.read_text(encoding='utf-8')
+          def rep(before,after,label):
+           global s
+           n=s.count(before)
+           if n!=1:raise RuntimeError(f'{label}: esperado 1, encontrado {n}')
+           s=s.replace(before,after,1)
+          rep('''            int sources=0;
+                      for(SourceRegistry.SourceEntry src:new SourceRegistry(this).all()){''','''            int sources=0, knownFilms=0, xtreamSources=0, fetchedFilms=0;
+                      int apiFailures=0;
+                      for(SourceRegistry.SourceEntry src:new SourceRegistry(this).all()){''','contadores exclusivos de filmes')
+          rep('''                    if(MOVIES.equals(kind)&&XtreamCatalog.supports(src.url)){
+                                  android.content.SharedPreferences syncPrefs''','''                    if(MOVIES.equals(kind)&&XtreamCatalog.supports(src.url)){
+                                  xtreamSources++;
+                                  android.content.SharedPreferences syncPrefs''','quantidade de fontes Xtream')
+          rep('''                                if(!fresh.isEmpty())db.mergeMovies(fresh);
+                                          syncPrefs.edit().putLong(src.id,System.currentTimeMillis()).remove(src.id+"_retry").apply();''','''                                if(!fresh.isEmpty()){fetchedFilms+=db.mergeMovies(fresh);}
+                                          syncPrefs.edit().putLong(src.id,System.currentTimeMillis()).remove(src.id+"_retry").apply();''','filmes importados')
+          rep('''                            }catch(Exception ex){
+                                          syncPrefs.edit().putLong(src.id+"_retry",System.currentTimeMillis()+10L*60*1000).apply();
+                                          android.util.Log.w("XenaMovies", "API VOD indisponível para esta fonte: "+ex.getClass().getSimpleName());''','''                            }catch(Exception ex){
+                                          apiFailures++;
+                                          syncPrefs.edit().putLong(src.id+"_retry",System.currentTimeMillis()+10L*60*1000).apply();
+                                          android.util.Log.w("XenaMovies", "API VOD indisponível para esta fonte: "+ex.getClass().getSimpleName());''','registrar erro seguro')
+          rep('''                    List<ChannelStore.Group> categories=MOVIES.equals(kind)
+                                  ?db.allMovieCategories():db.platformCategories(kind,brand);
+                              for(ChannelStore.Group group:categories){''','''                    List<ChannelStore.Group> categories=MOVIES.equals(kind)
+                                  ?db.allMovieCategories():db.platformCategories(kind,brand);
+                              if(MOVIES.equals(kind))for(ChannelStore.Group category:categories)knownFilms+=category.count;
+                              for(ChannelStore.Group group:categories){''','totais por categoria')
+          rep('''            final int countSources=sources;
+                      runOnUiThread(()->{''','''            final int countSources=sources, totalFilms=knownFilms,
+                          validXtream=xtreamSources, refreshedFilms=fetchedFilms, failedApis=apiFailures;
+                      runOnUiThread(()->{''','diagnostico disponivel UI')
+          rep('''                status.setText(result.isEmpty()
+                              ?"Nenhum "+kind.toLowerCase(Locale.ROOT)+" identificado como "+PlatformShortcutRules.displayName(brand)+" nas suas listas."
+                              :result.size()+" títulos encontrados • "+countSources+" fontes verificadas");''','''                if(MOVIES.equals(kind)){
+                              status.setText(result.size()+" filmes nesta plataforma • "+totalFilms+
+                                  " filmes no catálogo • "+countSources+" fontes • "+validXtream+" Xtream"+
+                                  (failedApis>0?" • "+failedApis+" API(s) VOD falharam":"")+
+                                  (refreshedFilms>0?" • "+refreshedFilms+" sincronizados":""));
+                          }else status.setText(result.isEmpty()
+                              ?"Nenhuma série identificada para "+PlatformShortcutRules.displayName(brand)+" nas suas listas."
+                              :result.size()+" títulos encontrados • "+countSources+" fontes verificadas");''','mostrar falha concreta na tela')
+          rep('''                        ?"Sua lista não identificou filmes desta plataforma automaticamente. Toque em 'Associar categorias' acima para vincular as pastas de filmes corretas, sem perder conteúdo."''','''                        ?(totalFilms==0
+                                      ?"Ainda não existem filmes VOD reconhecidos nesta fonte. Toque em Sincronizar filmes. Se a API não fornecer VOD, confira sua lista IPTV — séries e TV permanecerão intactas."
+                                      :"Existem "+totalFilms+" filmes importados, mas nenhum identificado nesta plataforma. Associe somente as categorias corretas da sua IPTV, sem misturar Netflix, Prime e outras.")''','explicacao diferente para catalogo vazio')
+          assert s.count('{')==s.count('}')
+          p.write_text(s,encoding='utf-8')
+          print('V4: diagnóstico IPTV/VOD observável, sem alteracao de series')
+          XENA_V4_PATCH
+          python3 -m py_compile patch_movie_diagnostics_v4.py
+          python3 patch_movie_diagnostics_v4.py
+          python3 - <<'XENA_V4_VALIDATE'
+          from pathlib import Path
+          main=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/MainActivity.java').read_text()
+          live=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/LiveTvActivity.java').read_text()
+          for key in ('homeGamesPanel();','PIPOOU_BANNER_INTERVAL_MS=8000L','ImageView.ScaleType.CENTER_CROP','XtreamCatalog.moviesOnly','totalFilms'):
+              assert key in main, 'Falta no APK: '+key
+          for key in ('MiranteStartRules.score','only_fazenda'):
+              assert key in live, 'Inicializacao de TV incompleta: '+key
+          assert main.count('{')==main.count('}')
+          print('CHECK V4 OK: Home/Jogos/Pipoou/Mirante/Filmes; Séries preservadas')
+          XENA_V4_VALIDATE
+
+      - name: Aplicar bordas verde e roxa na tela dividida conforme audio
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f patch_xenatv_dupla_bordas_neon.py ]; then
+            echo '::error title=Patch neon ausente::Envie patch_xenatv_dupla_bordas_neon.py na raiz do repositorio.'
+            exit 1
+          fi
+          python3 -m py_compile patch_xenatv_dupla_bordas_neon.py
+          python3 patch_xenatv_dupla_bordas_neon.py
+          python3 - <<'NEON_CHECK'
+          from pathlib import Path
+          path=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/FullScreenPlayerActivity.java')
+          code=path.read_text(encoding='utf-8')
+          expected=(
+              'XENA_SPLIT_NEON_AUDIO_V1',
+              '0xff43ff91', '0xffad63ff',
+              'firstPane.setForeground(xenaSplitNeonFrame(audiblePane==1))',
+              'secondPane.setForeground(xenaSplitNeonFrame(audiblePane==2))',
+              'xenaUpdateSplitNeon();',
+          )
+          for item in expected:
+              assert item in code, 'Falha na borda neon: '+item
+          print('CHECK OK: bordas associadas ao lado com audio, sem etiquetas.')
+          NEON_CHECK
+
+      - name: Resgate independente VOD Xtream, cache e associacao de categorias
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > patch_movies_v6_resgate.py <<'XENA_V6_MOVIES_PATCH'
+          #!/usr/bin/env python3
+          """XenaTV 6.9 V6: recuperação de filmes na IPTV, diagnóstico e categorias.
+          
+          Aplicar depois das etapas V5, antes do assembleDebug. Não modifica a lógica das
+          séries, o player nem a TV. Não acessa servidores nem armazena credenciais.
+          """
+          from pathlib import Path
+          
+          ROOT=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app')
+          MAIN=ROOT/'MainActivity.java'
+          XTREAM=ROOT/'XtreamCatalog.java'
+          HELPER=ROOT/'MovieCategoryRules.java'
+          if not (MAIN.is_file() and XTREAM.is_file()):
+              raise SystemExit('Base V5 ausente: este patch precisa rodar depois da montagem do Android.')
+          main=MAIN.read_text(encoding='utf-8')
+          xtream=XTREAM.read_text(encoding='utf-8')
+          if 'XENA_MOVIES_V6_RESCUE' in main:
+              print('Patch V6 já aplicado')
+              raise SystemExit(0)
+          
+          def replace_once(source,old,new,label):
+              n=source.count(old)
+              if n!=1: raise RuntimeError(f'{label}: esperado exatamente 1 ponto, encontrado {n}; nada gravado')
+              return source.replace(old,new,1)
+          
+          # 1) Algumas IPTV fornecem player_api.php ou panel_api.php no lugar de get.php.
+          # Exigir username/password na própria URL; nenhum segredo vai ao GitHub.
+          xtream=replace_once(xtream,
+              '''if(!path.toLowerCase(Locale.ROOT).endsWith("get.php"))throw new IOException("Endereço não é do tipo get.php com usuário e senha.");''',
+              '''String endpoint=path.substring(path.lastIndexOf('/')+1).toLowerCase(Locale.ROOT);
+                      if(!(endpoint.equals("get.php")||endpoint.equals("player_api.php")
+                              ||endpoint.equals("panel_api.php")||endpoint.isEmpty()))
+                          throw new IOException("A URL não é uma lista M3U/Xtream com credenciais.");''',
+              'aceitar links Xtream equivalentes')
+          
+          # 2) Categorias de VOD às vezes vêm no array category_ids ou como texto do item.
+          # Não inventar uma plataforma: atribuição automática só pelo grupo devolvido.
+          xtream=replace_once(xtream,
+              '''String group="Filmes • "+categories.getOrDefault(m.optString("category_id",""),"Sem categoria");''',
+              '''String idCategoria=m.optString("category_id","");
+                      if(!categories.containsKey(idCategoria)){
+                          JSONArray ids=m.optJSONArray("category_ids");
+                          if(ids!=null)for(int k=0;k<ids.length();k++){
+                              String idAlternativo=ids.optString(k,"");
+                              if(categories.containsKey(idAlternativo)){idCategoria=idAlternativo;break;}
+                          }
+                      }
+                      String categoria=categories.get(idCategoria);
+                      if(categoria==null||categoria.trim().isEmpty())
+                          categoria=m.optString("category_name",m.optString("category","Sem categoria"));
+                      if(categoria.trim().isEmpty())categoria="Sem categoria";
+                      String group="Filmes • "+categoria;''',
+              'metadados alternativos das categorias VOD')
+          
+          # 3) Evitar que um refresh M3U apague filmes e o cache impeça restaurá-los.
+          main=replace_once(main,
+              '''                store.replace(channels);
+                          String finalStatus="Importados "+store.count()+" itens usando "+method+".";''',
+              '''                store.replace(channels);
+                          // Uma nova lista substitui o banco; invalidar apenas o cache VOD desta fonte.
+                          getSharedPreferences("xena_vod_sync_v2",MODE_PRIVATE).edit()
+                              .remove(currentSourceId).remove(currentSourceId+"_retry").apply();
+                          String finalStatus="Importados "+store.count()+" itens usando "+method+".";''',
+              'invalidar cache de filmes depois de renovar lista')
+          main=replace_once(main,
+              '''            int sources=0, knownFilms=0, xtreamSources=0, fetchedFilms=0;
+                      int apiFailures=0;''',
+              '''            int sources=0, knownFilms=0, xtreamSources=0, fetchedFilms=0;
+                      int apiFailures=0, emptyVodResponses=0, nonXtreamSources=0;''',
+              'contadores VOD detalhados')
+          main=replace_once(main,
+              '''                        long last=syncPrefs.getLong(src.id,0L);
+                                  if((last==0L||System.currentTimeMillis()-last>12L*60*60*1000)
+                                      && System.currentTimeMillis()>=syncPrefs.getLong(src.id+"_retry",0L)){''',
+              '''                        long last=syncPrefs.getLong(src.id,0L);
+                                  // NÃO confiar no cache de 12h quando o banco de filmes está vazio.
+                                  // Ex.: atualizar playlist remove VOD, mas não atualiza o carimbo antigo.
+                                  boolean catalogoVazio=db.allMovieCategories().isEmpty();
+                                  long agora=System.currentTimeMillis();
+                                  if((catalogoVazio||last==0L||agora-last>12L*60*60*1000L)
+                                      && agora>=syncPrefs.getLong(src.id+"_retry",0L)){''',
+              'revalidar importação se catálogo local não tiver filmes')
+          main=replace_once(main,
+              '''                                if(!fresh.isEmpty()){fetchedFilms+=db.mergeMovies(fresh);}
+                                          syncPrefs.edit().putLong(src.id,System.currentTimeMillis()).remove(src.id+"_retry").apply();''',
+              '''                                if(!fresh.isEmpty()){
+                                              fetchedFilms+=db.mergeMovies(fresh);
+                                              syncPrefs.edit().putLong(src.id,System.currentTimeMillis())
+                                                  .remove(src.id+"_retry").apply();
+                                          }else{
+                                              emptyVodResponses++;
+                                              // API respondeu 0 filmes: não fingir que houve sincronização.
+                                              syncPrefs.edit().remove(src.id)
+                                                  .putLong(src.id+"_retry",System.currentTimeMillis()+2L*60*1000L).apply();
+                                          }''',
+              'resposta VOD vazia não conta como sucesso')
+          main=replace_once(main,
+              '''                    // Categorias reais da IPTV + vinculos locais escolhidos pelo usuário.''',
+              '''                    if(MOVIES.equals(kind)&&!XtreamCatalog.supports(src.url))nonXtreamSources++;
+                              // Categorias reais da IPTV + vinculos locais escolhidos pelo usuário.''',
+              'contagem de fontes que são apenas M3U')
+          main=replace_once(main,
+              '''                        if(!PlatformLinkRules.includes(brand,src.id,group.title,manuallyLinked))continue;''',
+              '''                        if(!(MOVIES.equals(kind)
+                                      ?MovieCategoryRules.includes(brand,src.id,group.title,manuallyLinked)
+                                      :PlatformLinkRules.includes(brand,src.id,group.title,manuallyLinked)))continue;''',
+              'identificar categorias de filmes separadamente das séries')
+          main=replace_once(main,
+              '''            final int countSources=sources, totalFilms=knownFilms,
+                          validXtream=xtreamSources, refreshedFilms=fetchedFilms, failedApis=apiFailures;''',
+              '''            final int countSources=sources, totalFilms=knownFilms,
+                          validXtream=xtreamSources, refreshedFilms=fetchedFilms, failedApis=apiFailures,
+                          emptyApis=emptyVodResponses, playlistSources=nonXtreamSources;''',
+              'contadores da tela')
+          main=replace_once(main,
+              '''                        (failedApis>0?" • "+failedApis+" API(s) VOD falharam":"")+
+                                  (refreshedFilms>0?" • "+refreshedFilms+" sincronizados":""));''',
+              '''                        (failedApis>0?" • "+failedApis+" API(s) VOD falharam":"")+
+                                  (emptyApis>0?" • "+emptyApis+" API(s) VOD sem filmes":"")+
+                                  (playlistSources>0?" • "+playlistSources+" fonte(s) M3U":"")+
+                                  (refreshedFilms>0?" • "+refreshedFilms+" sincronizados":""));''',
+              'informar quando servidor devolve zero filmes')
+          main=replace_once(main,
+              '''            Button link=button("⚙  Associar categorias de filmes das minhas listas",false);''',
+              '''            Button diagnostics=button("🔎 Diagnóstico: filmes e categorias por fonte",false);
+                      diagnostics.setTextColor(MINT);body.addView(diagnostics,lp(-1,48));gap(body,8);
+                      diagnostics.setOnClickListener(v->showMovieCatalogDiagnostics());
+                      Button link=button("⚙  Associar categorias de filmes das minhas listas",false);''',
+              'adicionar diagnóstico visível da biblioteca')
+          
+          # 4) Regras de mapeamento específicas para filmes. Séries usam o código anterior.
+          # Só grupos claramente nomeados recebem associação automática; grupos genéricos
+          # permanecem livres para a vinculação manual que o usuário já tem na interface.
+          HELPER_CONTENT='''package br.com.xenatv.app;
+          
+          import java.text.Normalizer;
+          import java.util.Locale;
+          import java.util.Set;
+          
+          /** Categoria VOD do fornecedor; nunca deduz plataforma apenas pelo título do filme. */
+          public final class MovieCategoryRules {
+              private MovieCategoryRules(){}
+              public static String brand(String raw){
+                  if(raw==null)return "";
+                  String builtin=PlatformShortcutRules.canonical(CategoryIconRules.brand(raw));
+                  if(!builtin.isEmpty())return builtin;
+                  String s=Normalizer.normalize(raw,Normalizer.Form.NFD)
+                      .replaceAll("\\\\p{M}+","").toLowerCase(Locale.ROOT)
+                      .replaceAll("[^a-z0-9]+"," ").trim();
+                  String padded=" "+s+" ";
+                  if(padded.contains(" net flix ")||padded.contains(" nfx "))return "netflix";
+                  if(padded.contains(" prime ")||padded.contains(" amazon video "))return "primevideo";
+                  if(padded.contains(" disney plus "))return "disneyplus";
+                  if(padded.contains(" apple tv plus "))return "appletv";
+                  if(padded.contains(" hbo max ")||padded.contains(" hbo "))return "hbomax";
+                  return "";
+              }
+              public static boolean includes(String platform,String sourceId,String category,Set<String> selected){
+                  String detected=brand(category);
+                  if(!detected.isEmpty())return detected.equals(PlatformShortcutRules.canonical(platform));
+                  return selected!=null&&selected.contains(PlatformLinkRules.key(sourceId,category));
+              }
+          }
+          '''
+          
+          # 5) Diagnóstico por fonte, SEM URL, credenciais, tokens ou dados enviados a terceiros.
+          method='''    // XENA_MOVIES_V6_RESCUE
+              private void showMovieCatalogDiagnostics(){
+                  Toast.makeText(this,"Verificando somente o catálogo local...",Toast.LENGTH_SHORT).show();
+                  new Thread(()->{
+                      StringBuilder report=new StringBuilder();
+                      int total=0;
+                      for(SourceRegistry.SourceEntry src:new SourceRegistry(this).all()){
+                          if(!src.enabled||"saimo_channels".equals(src.kind))continue;
+                          ChannelStore db=null;
+                          try{
+                              db=new ChannelStore(this,src.id);
+                              java.util.List<ChannelStore.Group> groups=db.allMovieCategories();
+                              int count=0;
+                              for(ChannelStore.Group group:groups)count+=group.count;
+                              total+=count;
+                              report.append("Fonte: ").append(src.name).append("\\n");
+                              report.append(XtreamCatalog.supports(src.url)?"Xtream compatível":"Playlist M3U / arquivo");
+                              report.append(" • ").append(count).append(" filmes • ").append(groups.size()).append(" grupos\\n");
+                              if(groups.isEmpty())report.append("Nenhum filme VOD reconhecido nesta fonte.\\n");
+                              for(int i=0;i<Math.min(8,groups.size());i++){
+                                  ChannelStore.Group g=groups.get(i);
+                                  report.append("  • ").append(g.title).append(" (").append(g.count).append(")\\n");
+                              }
+                              if(groups.size()>8)report.append("  … e mais ").append(groups.size()-8).append(" grupos\\n");
+                          }catch(Exception ex){report.append("Fonte ").append(src.name).append(": erro no banco local\\n");}
+                          finally{if(db!=null)db.close();}
+                          report.append("\\n");
+                      }
+                      if(report.length()==0)report.append("Nenhuma fonte IPTV ativa encontrada.");
+                      final String summary="Total local: "+total+" filmes\\n\\n"+report.toString()+
+                          "Se há filmes e a plataforma está vazia, use Associar categorias. "+
+                          "Se há zero filmes, verifique Sincronizar filmes ou se o provedor oferece VOD.";
+                      runOnUiThread(()->{
+                          if(isFinishing()||isDestroyed())return;
+                          new AlertDialog.Builder(this).setTitle("Diagnóstico IPTV • Filmes")
+                              .setMessage(summary).setPositiveButton("Entendi",null).show();
+                      });
+                  },"XenaTV-Diagnostico-VOD").start();
+              }
+          '''
+          main=replace_once(main,
+              '''    private void choosePlatformMovieCategories(String brand){''',
+              method+'''    private void choosePlatformMovieCategories(String brand){''',
+              'incluir diagnóstico local')
+          main=replace_once(main,
+              '''                        if(!CategoryIconRules.brand(group.title).isEmpty())continue;''',
+              '''                        if(!MovieCategoryRules.brand(group.title).isEmpty())continue;''',
+              'não oferecer categoria já nomeada de outra plataforma')
+          
+          assert 'XENA_MOVIES_V6_RESCUE' in main
+          assert main.count('mergeSeries(')==1, 'Alteração inesperada na seção das séries'
+          assert 'categories(a,"get_vod_categories")' in xtream
+          assert 'get_vod_streams' in xtream
+          assert 'XENA_SPLIT_NEON_AUDIO_V1' not in main # o player separado não muda
+          # Toda validação anterior acontece antes de gravar.
+          MAIN.write_text(main,encoding='utf-8')
+          XTREAM.write_text(xtream,encoding='utf-8')
+          HELPER.write_text(HELPER_CONTENT,encoding='utf-8')
+          print('V6 OK: Xtream get/player_api; category_ids; cache VOD; diagnóstico local; mapeamento VOD separado de séries.')
+          XENA_V6_MOVIES_PATCH
+          python3 -m py_compile patch_movies_v6_resgate.py
+          python3 patch_movies_v6_resgate.py
+          cat > TestMovieCategoryRules.java <<'XENA_V6_MOVIE_RULES_TEST'
+          package br.com.xenatv.app;
+          import java.util.HashSet;
+          public class TestMovieCategoryRules {
+              private static int passed=0;
+              private static void check(boolean value,String label){
+                  if(!value)throw new AssertionError(label);passed++;
+              }
+              public static void main(String[] args){
+                  HashSet<String> map=new HashSet<>();
+                  map.add(PlatformLinkRules.key("source-1","Filmes • Ação"));
+                  check(MovieCategoryRules.includes("netflix","source-1","Filmes • Netflix 2026",map),"Netflix categoria");
+                  check(MovieCategoryRules.includes("netflix","source-1","Filmes | NFX 2025",map),"Netflix alias NFX");
+                  check(MovieCategoryRules.includes("primevideo","source-1","MOVIES PRIME",map),"Prime alias");
+                  check(!MovieCategoryRules.includes("disneyplus","source-1","Filmes • Netflix",map),"nao misturar Disney/Netflix");
+                  check(MovieCategoryRules.includes("netflix","source-1","Filmes • Ação",map),"map manual");
+                  check(!MovieCategoryRules.includes("netflix","source-2","Filmes • Ação",map),"isolar fonte");
+                  check(!MovieCategoryRules.includes("primevideo","source-1","Filmes • Ação",new HashSet<>()),"sem inventar Prime");
+                  check(!MovieCategoryRules.includes("netflix","source-1","Séries • HBO Max",map),"nao confundir marca");
+                  System.out.println("V6: "+passed+" testes de mapeamento de filmes OK");
+              }
+          }
+          XENA_V6_MOVIE_RULES_TEST
+          mkdir -p /tmp/xena-v6-movie-rules
+          javac -encoding UTF-8 -d /tmp/xena-v6-movie-rules \
+            xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/CategoryIconRules.java \
+            xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/PlatformShortcutRules.java \
+            xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/PlatformLinkRules.java \
+            xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app/MovieCategoryRules.java \
+            TestMovieCategoryRules.java
+          java -cp /tmp/xena-v6-movie-rules br.com.xenatv.app.TestMovieCategoryRules
+          python3 - <<'XENA_V6_FINAL_CHECK'
+          from pathlib import Path
+          p=Path('xena-premium/XenaTV_Android/app/src/main/java/br/com/xenatv/app')
+          m=(p/'MainActivity.java').read_text()
+          x=(p/'XtreamCatalog.java').read_text()
+          assert 'XENA_MOVIES_V6_RESCUE' in m
+          for item in ('MovieCategoryRules.includes','showMovieCatalogDiagnostics','catalogoVazio','get_vod_categories','get_vod_streams'):
+              assert item in (m+x),item
+          assert 'public static ArrayList<M3UStreamParser.Channel> seriesOnly(String source)' in x
+          assert (p/'MovieCategoryRules.java').is_file()
+          print('V6: importador independente e diagnóstico presentes; TV e séries preservadas no código.')
+          XENA_V6_FINAL_CHECK
+
+      - name: Compilar APK debug para testes
+        working-directory: xena-premium/XenaTV_Android
+        run: gradle --no-daemon --stacktrace assembleDebug
+
+      - name: Publicar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: XenaTV-6-9-V6-RESGATE-FILMES-XTREAM-APK
+          path: xena-premium/XenaTV_Android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
